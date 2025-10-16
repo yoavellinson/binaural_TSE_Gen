@@ -1,0 +1,43 @@
+batch_size: 10
+lr: 0.0001
+num_epochs: 100000
+sample_interval: 500
+device: 'cuda:0'
+input_size: [640,256] #(t,f)
+patch_size: 8
+in_channels: 14
+hidden_size: 384
+depth: 12
+num_heads: 6
+checkpoint_dir: '/home/workspace/yoavellinson/mono-to-stereo/checkpoints_RI_flow'
+
+dataset:
+  fs: 16000
+  csv_path: '/dsi/gannot-lab1/datasets/whamr/data/mix_2_spk_filenames_tr.csv'
+  test_csv_path: '/dsi/gannot-lab1/datasets/whamr/data/mix_2_spk_filenames_tt.csv'
+  time_len: 5.115 #seconds, has to be it to match 640 stft fframes
+  batch_size_train: 16 #5
+  batch_size_val: 5
+  num_workers: 32
+  norm_sample: True
+  n_channels: 2
+  hrtf_path: '/home/workspace/yoavellinson/guided_extraction/hrtf_sofa/RIEC_hrir_subject_001.sofa'
+  h_anechoic_path: '/home/workspace/yoavellinson/extraction_master/complex_nn/extraction/reverberation_simulator/h_anechoic'
+  var_hrtf: 10 #recive the hrtf of +-10 deg
+  noise_dir: '/home/workspace/yoavellinson/extraction_master/complex_nn/extraction/anechoic-noise/output'
+  noise_tol: 10
+  n_freqs: 256
+  db_root_train: '/dsi/gannot-lab1/datasets/whamr/wav16k/min/tr/mix_both_reverb'
+  db_root_test: '/dsi/gannot-lab1/datasets/whamr/wav16k/min/tt/mix_both_reverb'
+  wsj0_root: '/dsi/gannot-lab1/datasets/wsj0_root/'
+  array:
+    d: 0.03 #m
+    n: 7
+    r: 1.5
+    c: 343.0
+    room_x: 6
+    room_y: 2.8
+    room_z: 5
+stft:
+  fft_length: 512
+  fft_hop: 128
