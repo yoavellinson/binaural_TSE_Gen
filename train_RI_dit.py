@@ -7,7 +7,7 @@ from models_dit import DiT
 # from datasets import get_dataset
 from tools.data_processing import complex_to_interleaved
 import torch.optim as optim
-from data import MonoStereoWhamrDataset
+from data import ExtractionDatasetRev
 from omegaconf import OmegaConf
 from wandb_key import WANDB_API_KEY
 import wandb
@@ -48,7 +48,7 @@ class EMA:
 
 def train(hp,resume_checkpoint_path=''):
     # Dataset & DataLoader
-    train_dataset = MonoStereoWhamrDataset(hp,train=True,mono_input=True,debug=False )
+    train_dataset = ExtractionDatasetRev(hp,train=True,mono_input=True,debug=False)
     dataloader = DataLoader(train_dataset, batch_size=hp.batch_size, shuffle=True)
     wandb.init(project='mono-to-stereo-DiT', config={
             "num_epochs": hp.num_epochs,
@@ -73,12 +73,6 @@ def train(hp,resume_checkpoint_path=''):
     ema = EMA(model, decay=0.9999, device=device)
 
     if resume_checkpoint_path!='':
-        # ckpt = torch.load(resume_checkpoint_path, map_location=device,weights_only=False)
-        # model.load_state_dict(ckpt['model_state_dict'])
-        # model.to(device)
-        # optimizer = optim.AdamW(model.parameters(), lr=hp.lr)
-        # optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        # epoch = int(ckpt['epoch'])
         ckpt = torch.load(resume_checkpoint_path, map_location=device)
         (model.module if hasattr(model, "module") else model).load_state_dict(ckpt["model_state_dict"])
         model.to(device)
@@ -99,11 +93,6 @@ def train(hp,resume_checkpoint_path=''):
     
     # Create diffusion model
     diffusion = create_diffusion(timestep_respacing="",diffusion_steps=30,predict_v=True,predict_xstart=False)
-    
-    snr = diffusion.alphas_cumprod / (1.0 - diffusion.alphas_cumprod + 1e-20)
-    p, k = 2.0, 0.5   # same values you use in p2 weighting
-    w = (k + snr) ** (-p)
-    p_t = w / w.sum()
 
     # Create directory to save model checkpoints
     os.makedirs(hp.checkpoint_dir, exist_ok=True)
@@ -127,8 +116,7 @@ def train(hp,resume_checkpoint_path=''):
             x = complex_to_interleaved(x).to(device)
             cond_tf = complex_to_interleaved(cond_tf).to(device)
             # Sample t
-            # t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            t = np.random.choice(diffusion.num_timesteps, size=B, p=p_t.astype(np.float32))
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             t = torch.from_numpy(t).to(device).long()
 
             model_kwargs = dict(y=cond_tf)
