@@ -2,8 +2,7 @@
 #     GLIDE: https://github.com/openai/glide-text2im/blob/main/glide_text2im/gaussian_diffusion.py
 #     ADM:   https://github.com/openai/guided-diffusion/blob/main/guided_diffusion
 #     IDDPM: https://github.com/openai/improved-diffusion/blob/main/improved_diffusion/gaussian_diffusion.py
-import torch
-from torch import nn
+
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 
@@ -14,10 +13,9 @@ def create_diffusion(
     use_kl=False,
     sigma_small=False,
     predict_xstart=False,
-    predict_v=True,
     learn_sigma=True,
     rescale_learned_sigmas=False,
-    diffusion_steps=30
+    diffusion_steps=1000
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, diffusion_steps)
     if use_kl:
@@ -27,18 +25,13 @@ def create_diffusion(
     else:
         loss_type = gd.LossType.MSE
     if timestep_respacing is None or timestep_respacing == "":
-        timestep_respacing = f"ddim{diffusion_steps}"#[diffusion_steps]#
-    if predict_v:
-        model_mean_type = gd.ModelMeanType.V
-    elif predict_xstart:
-        model_mean_type = gd.ModelMeanType.START_X
-    else:
-        model_mean_type = gd.ModelMeanType.EPSILON
-
+        timestep_respacing = [diffusion_steps]
     return SpacedDiffusion(
         use_timesteps=space_timesteps(diffusion_steps, timestep_respacing),
         betas=betas,
-        model_mean_type=model_mean_type,
+        model_mean_type=(
+            gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
+        ),
         model_var_type=(
             (
                 gd.ModelVarType.FIXED_LARGE
@@ -51,4 +44,3 @@ def create_diffusion(
         loss_type=loss_type
         # rescale_timesteps=rescale_timesteps,
     )
-
