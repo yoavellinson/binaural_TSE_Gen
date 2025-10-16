@@ -14,7 +14,6 @@ from pathlib import Path
 import rir_generator as rir
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from tools.transforms_audio.audio2spec2audio import AudioToSpec
 
 class MonoStereoWhamrDataset(Dataset):
     def __init__(self,hp,train=True,debug=False,mono_input=False):
