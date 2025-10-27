@@ -27,7 +27,7 @@ class SOFA_HRTF_db:
         self.nfft=nfft
         self._load_sofa_path(path)
         self._get_positions()
-
+    
     def _load_sofa_path(self,path):
         #loading the HRTF.sofa file
         try:
@@ -36,7 +36,10 @@ class SOFA_HRTF_db:
         except:
             if not Path(path).exists():
                 raise FileNotFoundError(f"The HRTF.sofa path: '{path}' does not exist.")
-            
+            return
+        
+    def get_positions(self):
+        return self.H,self.azelevs
     def _get_positions(self):
         # Summarazing all the available hrtf by azimuth and elevation, assuming R is equal for the whole dataset
         pos = self.hrtf_obj.Source.Position.get_values(system="spherical", angle_unit="degree") #az,elev,r
@@ -57,10 +60,9 @@ class SOFA_HRTF_db:
             self.azelevs.append(torch.tensor([p[0],p[1]]))
         
         # stack + fft
-        print('')
-        self.H = torch.fft.rfft(torch.stack(self.hs),n=self.nfft,dim=-1)
+        H = torch.fft.rfft(torch.stack(self.hs),n=self.nfft,dim=-1)
+        self.H = torch.concat((H.real,H.imag),dim=1).real
         self.azelevs = torch.stack(self.azelevs)
-        #done here
 
     def impzest(self,input_signal, output_signal):
         if np.any(np.isnan(input_signal)) or np.any(np.isnan(output_signal)):
@@ -89,10 +91,7 @@ class SOFA_HRTF_db:
             rir_dec[i,:len(res)] = res
         return rir_dec
         
-    
 
-
-        
 class SOFA_HRTF_wrapper:
     def __init__(self,path=''):
         self._load_sofa_path(path)

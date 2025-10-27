@@ -6,7 +6,38 @@ import numpy as np
 # from torchmetrics.audio import ShortTimeObjectiveIntelligibility
 from torch_pesq import PesqLoss
 from scipy.signal import deconvolve
-    
+
+def kl_divergence(mu, logvar):
+    # mean over batch
+    return -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1))
+
+def mae_recon_loss(pred, target, mae_keep, kpm):
+    # accept either [B,N,D] or [B,N,C,T]
+    if pred.dim() == 4:
+        B, N, C, T = pred.shape
+        pred   = pred.reshape(B, N, C*T)
+        target = target.reshape(B, N, C*T)
+    valid  = ~kpm
+    masked = (~mae_keep) & valid
+    if masked.sum() == 0:
+        return pred.new_zeros([])
+    return F.l1_loss(pred[masked], target[masked], reduction='mean')
+
+def info_nce(z1, z2, temperature=0.1):
+    z1 = F.normalize(z1, dim=-1); z2 = F.normalize(z2, dim=-1)
+    logits = (z1 @ z2.t()) / temperature              # [B,B]
+    labels = torch.arange(z1.size(0), device=z1.device)
+    return 0.5*(F.cross_entropy(logits, labels) + F.cross_entropy(logits.t(), labels))
+
+
+@torch.no_grad()
+def make_mae_keep(B, N, ratio, device):
+    K = int((1.0 - ratio) * N)              # how many to keep
+    idx = torch.argsort(torch.rand(B, N, device=device), dim=1)[:, :K]
+    keep = torch.zeros(B, N, dtype=torch.bool, device=device)
+    keep.scatter_(1, idx, True)
+    return keep  # True = visible
+
 class PITPESQLoss(nn.Module):
     def __init__(self, hp):
         super().__init__()
