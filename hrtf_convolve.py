@@ -15,7 +15,7 @@ import random
 from pathlib import Path
 from typing import Sequence, Tuple, Dict, Any, Optional
 import math
-
+from tqdm import tqdm
 
 sind = lambda degrees: np.sin(np.deg2rad(degrees))
 cosd = lambda degrees: np.cos(np.deg2rad(degrees))
@@ -60,7 +60,12 @@ class SOFA_HRTF_db:
             self.azelevs.append(torch.tensor([p[0],p[1]]))
         
         # stack + fft
-        H = torch.fft.rfft(torch.stack(self.hs),n=self.nfft,dim=-1)
+        h = torch.stack(self.hs)
+        max_per_sample = h.abs().amax(dim=(1, 2), keepdim=True)  # shape [865, 1, 1]
+        max_per_sample[max_per_sample == 0] = 1e-8
+        h_norm = h / max_per_sample
+        # h_norm = h/(h.abs().max(dim=-1, keepdim=True).values)
+        H = torch.fft.rfft(h_norm,n=self.nfft,dim=-1)
         self.H = torch.concat((H.real,H.imag),dim=1).real
         self.azelevs = torch.stack(self.azelevs)
 
@@ -157,8 +162,11 @@ class SOFA_HRTF_wrapper:
         self.elev_list = np.unique(pos[:,1])
         self.R = np.unique(pos[:,2])[0]
         self.lookup_table = pd.DataFrame(index = self.az_list,columns=self.elev_list )
+        self.azelevs=[]
         for idx,p in enumerate(pos):
             self.lookup_table.at[p[0],p[1]] = idx
+            self.azelevs.append(torch.tensor([p[0],p[1]]))
+        self.azelevs = torch.stack(self.azelevs)
 
     def nearest_valid_idx(self, az, elev):
         """
@@ -211,19 +219,11 @@ class SOFA_HRTF_wrapper:
         return res,fs,hrtf,az,elev
 
     def get_hrtf(self,az,elev,fs=16000):
-        if az not in self.az_list: 
-            az = self.az_list[np.argmin(abs(self.az_list-az))]
-            print('not')
-        if elev not in self.elev_list:
-            elev = self.elev_list[np.argmin(abs(self.elev_list-elev))]
-        measurement = self.lookup_table.at[az,elev]
-        if np.isnan([measurement]):
-            raise ValueError(f'The position of {az},{elev} is not available')
+        measurement = self.lookup_table.iloc[az, elev]         
         h = np.zeros([self.hrtf_obj.Dimensions.N,2])
         h[:,0] = self.hrtf_obj.Data.IR.get_values(indices={"M":measurement, "R":0, "E":0})
         h[:,1] = self.hrtf_obj.Data.IR.get_values(indices={"M":measurement, "R":1, "E":0})
         if self.target_fs != fs:
-            # h = librosa.core.resample(h.T,orig_sr=self.target_fs,target_sr=fs).T
             h = self.decimate_rir(h.T,self.target_fs,fs).T
         return h
     
@@ -231,32 +231,60 @@ def test_hrtf(path,name):
     hrtf_ir = SOFA_HRTF_wrapper(path)
     azs = {}
     tmp_az = 90
-    for i in range(37):
+    for i in range(5):
         d = {'az':tmp_az}
         azs[str(i)] = d
-        tmp_az -=5
-        if tmp_az ==-5:
-            tmp_az = 355
+        tmp_az -=45
+        if tmp_az ==-45:
+            tmp_az = 315
 
     for i,d in azs.items():
         s,fs,hrtf,az,elev = hrtf_ir.conv_file('/home/workspace/yoavellinson/binaural_TSE_Gen/441a010b.wav',d['az'],0)
-        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/hrtf_testing/{name}/hrtf_az_{az}_elev_{elev}.wav',s.T,fs)
+        out_dir = Path(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/hrtf_testing/new_test/{name}')
+        out_dir.mkdir(exist_ok=True)
+        sf.write(out_dir/f'hrtf_az_{az}_elev_{elev}.wav',s.T,fs)
 
     
 if __name__=="__main__":
-    hrtf_db = SOFA_HRTF_db('/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/3d3a/Subject1_HRIRs.sofa')
+    # # root = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/hrtf_testing/sofa_downloads')
+    # # names = root.glob('**/')
+    # # for name in tqdm(list(names)):
+    # #     try:
+    # #         path = list(name.glob('*.sofa'))[0]
+    # #         test_hrtf(path,name.stem)
+    # #         print(f'{name.stem} Done!')
+    # #     except:
+    # #         print(f'{name.stem} Failed!')
+    # #         continue
+    # hrtf_db = SOFA_HRTF_db('/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/riec_full/RIEC_hrir_subject_001.sofa')
+    import pickle
 
-    # sofas = {'3d3a':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/3d3a/Subject1_HRIRs.sofa',
-    #          'ari':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/ari_atl_and_full/hrtf b_nh2.sofa',
-    #          'axd':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/axd/p0001.sofa',
-    #          'bili':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/bili/IRC_1101_C_HRIR_96000.sofa',
-    #          'riec':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/riec_full/RIEC_hrir_subject_001.sofa',
-    #          'sadie':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/sadie/D1_48K_24bit_256tap_FIR_SOFA.sofa',
-    #          'ss2':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/ss2/AKO536081622_1_processed.sofa'}    
-    # d={}
-    # for name,p in sofas.items():
-    #     hrtf_ir = SOFA_HRTF_wrapper(p)
-    #     np.set_printoptions(precision=2, suppress=True)
+    sofas = {'ari_atl_and_full':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/ari_atl_and_full/hrtf_b_nh2.sofa',
+             'axd':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/axd/p0001.sofa',
+             'fhk':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/fhk/HRIR_CIRC360_NF025.sofa',
+             'riec_full':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/riec_full/RIEC_hrir_subject_001.sofa',
+             'sadie':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/sadie/D1_48K_24bit_256tap_FIR_SOFA.sofa',
+             'ss2':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/ss2/AKO536081622_1_processed.sofa',
+             'viking':'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/viking/subj_A.sofa'}    
+    d={}
+    for name,p in sofas.items():
+        hrtf_ir = SOFA_HRTF_wrapper(p)
+        azs_elev = {}
+        for azelev in hrtf_ir.azelevs:        
+            az = float(azelev[0])
+            if (0 <= az <= 90) or (270 <= az <= 360):
+                az = str(az)    
+                if az in azs_elev.keys():
+                    azs_elev[az].append(float(azelev[1]))
+                else:
+                    azs_elev[az]=[float(azelev[1])]
+        # print(name,azs_elev.keys())
+        d[name] = azs_elev
+    with open("sofa_az_elev_lookup.pkl", "wb") as f:
+        pickle.dump(d, f)
+
+            # azelev['az':1]
+    #     # print(hrtf_ir.azelevs)
     #     row_steps = np.diff(hrtf_ir.lookup_table.index)
     #     row_steps = [f"{x:.2f}" for x in row_steps]
     #     col_steps = np.diff(hrtf_ir.lookup_table.columns)

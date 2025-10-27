@@ -8,16 +8,17 @@ model:
   kernel_size: 4
   norm: layer
   act_fun: relu
-  max_len_sec: 5
 stft:
   fs: 16000
-  fft_length: 512
-  fft_hop: 128
+  fft_length: 1024
+  fft_hop: 256
   window: hann
 dataset:
   sofas_ppath: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts'
-  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts/train.csv'
+  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0.csv'
   test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts/test.csv'
+  norm_sample: True
+  time_len: 5
 training:
   num_epochs: 1000
   lr: 2e-4
