@@ -58,7 +58,7 @@ def az_elev_to_xyz_yaw_pitch(az,elev,theta,x,y,z):
     pitch = -elev
     return x+xy[0],y+xy[1],z+delta_z,yaw,pitch
 
-def run_single_simulation(j,sofa_path,az1,elev1,az2,elev2):
+def run_single_simulation(j,sofa_path,az1,elev1,az2,elev2,dir_add_str=''):
     room_x = 10
     room_y = 10
     room_z = 2.8
@@ -75,8 +75,10 @@ def run_single_simulation(j,sofa_path,az1,elev1,az2,elev2):
     out_file_name_order_0 = f'h_first'
     sofa_path_obj = Path(sofa_path)
     name = f'{sofa_path_obj.parent.stem}_{sofa_path_obj.stem}_az1{az1}_elev1{elev1}_az2{az2}_elev2{elev2}'
-    out_dir =Path(f'/home/workspace/yoavellinson/binaural_TSE_Gen/scripts/reverbration_simulator/hrtf/{name}')
+    out_dir =Path(f'/home/workspace/yoavellinson/binaural_TSE_Gen/scripts/reverbration_simulator/hrtf{dir_add_str}')
 
+    out_dir.mkdir(exist_ok=True)
+    out_dir= out_dir/name
     out_dir.mkdir(exist_ok=True)
 
     theta = np.random.uniform(0,90)

@@ -56,7 +56,7 @@ class CDecoder(nn.Module):
         self.sa=sa
         
         # ic = 1024  if (not ( hp.model_def_name=='Two_Stages' or hp.model_def_name=='Three_Stages' or hp.model_def_name=='First_Stage_Separation' ) or hp.use_emb_ref) else 512
-        oc = hp.output_channels
+        oc = hp.model.output_channels
         self.upconvlayer1 = self.unet_upconv(ic, 512, kernel_size,stride)
         self.upconvlayer2 = self.unet_upconv(512*2, 256, kernel_size,stride)
         self.upconvlayer3 = self.unet_upconv(512, 128, kernel_size,stride)
@@ -70,7 +70,6 @@ class CDecoder(nn.Module):
                 'conv1feature'], inputs['conv2feature'], inputs['conv3feature'], inputs['conv4feature']
 
         upconv1feature = self.upconvlayer1(bottleneck)
-
         in_layer2 =  torch.cat((upconv1feature, conv4feature), self.dim) 
         upconv2feature = self.upconvlayer2(in_layer2)
  
@@ -173,29 +172,26 @@ class CBottleneck(nn.Module):
         super().__init__()
         self.hp=hp
         embed_dim = 512
-        hrtf_dim = hp.stft.fft_length//2
-        self.fc1= nn.Linear(16*embed_dim,embed_dim,dtype=torch.complex64)
+        hrtf_dim = hp.stft.fft_length//2 +1
+        self.fc1= nn.Linear(32*embed_dim,embed_dim,dtype=torch.complex64)
 
         self.self_attention_mix = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
 
         #bn self attentions *4 with attention map transfer
         self.self_attention_bn_0 = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
-        self.globln_0 =GlobLNComplex(626)
+        self.globln_0 =GlobLNComplex(313)
         self.self_attention_bn_1 = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
-        self.globln_1 =GlobLNComplex(626)
+        self.globln_1 =GlobLNComplex(313)
         self.self_attention_bn_2 = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
-        self.globln_2 =GlobLNComplex(626)
+        self.globln_2 =GlobLNComplex(313)
         self.self_attention_bn_3 = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
-        self.globln_3 =GlobLNComplex(626)
-        #
+        self.globln_3 =GlobLNComplex(313)
 
         self.fc_hrtf = nn.Linear(hrtf_dim*2,512,dtype=torch.complex64)
-        self.attn_hrtf = CustomMultiheadAttention(embed_dim=hrtf_dim,num_heads=8)
+        self.attn_hrtf = CustomMultiheadAttention(embed_dim=hrtf_dim,num_heads=9)
         self.globln_hrtf =GlobLNComplex(2)        
-        self.output_proj =nn.Linear(embed_dim,embed_dim*16,dtype=torch.complex64)
-        if hp.bottleneck.process == 'cross_attn':
-            self.cross_attn = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
-            self.globln_bn = GlobLNComplex(626)
+        self.output_proj =nn.Linear(embed_dim,embed_dim*32,dtype=torch.complex64)
+     
 
     def forward(self,emb_mix,hrtf):
             B = emb_mix.shape[0]
@@ -204,7 +200,7 @@ class CBottleneck(nn.Module):
             T = emb_mix.shape[3]
 
             emb_mix = emb_mix.permute(0,3,2,1).flatten(2,3)  #(B, 512, 16,626) ->  (B, 626, 512,16)-> (B,626,512*16)
-            emb_mix = self.fc1(emb_mix) #(B,626,512)
+            emb_mix = self.fc1(emb_mix) #(B,626,512) ##################################################################### check dims
             emb_mix,_ = self.self_attention_mix(emb_mix)
             hrtf,_ = self.attn_hrtf(hrtf)
             hrtf = self.globln_hrtf(hrtf)
@@ -213,12 +209,8 @@ class CBottleneck(nn.Module):
             # hrtf = hrtf.unsqueeze(-1).expand(emb_mix.shape[0], emb_mix.shape[0], emb_mix.shape[0])
             if B>1:
                 hrtf=hrtf.unsqueeze(1)
-            if self.hp.bottleneck.process == 'cross_attn':
-                KV = hrtf.repeat(1,T,1)
-                bn,_ = self.cross_attn(emb_mix,KV,KV)
-                bn = self.globln_bn(bn)
-            else:
-                bn = emb_mix * hrtf
+          
+            bn = emb_mix * hrtf
             
             #self attn with attn_map transfer
             bn,attn_mask = self.self_attention_bn_0(bn)

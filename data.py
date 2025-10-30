@@ -72,8 +72,14 @@ class PatchDBDataset(Dataset):
         elev1 = line['elev_1']
         elev2 = line['elev_2']
 
-        idx1 = int(((pos[:, 0] == az1) & (pos[:, 1] == elev1)).nonzero(as_tuple=True)[0])
-        idx2 = int(((pos[:, 0] == az2) & (pos[:, 1] == elev2)).nonzero(as_tuple=True)[0])
+        target1 = torch.tensor([az1, elev1], dtype=pos.dtype, device=pos.device)
+        dist1 = torch.norm(pos - target1, dim=1)  # Euclidean distance
+        idx1 = torch.argmin(dist1).item()
+        target2 = torch.tensor([az2, elev2], dtype=pos.dtype, device=pos.device)
+        dist2 = torch.norm(pos - target2, dim=1)  # Euclidean distance
+        idx2 = torch.argmin(dist2).item()
+        
+
 
         hrtf1 = patches[idx1]
         hrtf2 = patches[idx2]
@@ -273,12 +279,22 @@ if __name__ == "__main__":
     joined_ds = JoinedDataset(ds_db, ds_mix)
     loader = DataLoader(
         joined_ds,
-        batch_size=2,
+        batch_size=1,
         num_workers=1,
         collate_fn=collate_joined
     )
     for step,batch in tqdm(enumerate(loader),total=len(loader)):
         print(batch.keys())   
+        
+        Mix = batch['mix_mix']
+        S1,S2 = batch['mix_y1'],batch['mix_y2']
+        mix = ds_mix.iSTFT(Mix)
+        s1,s2 = ds_mix.iSTFT(S1),ds_mix.iSTFT(S2)
+
+        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/mix_{step}.wav',mix.T,16000)
+        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s1_{step}.wav',s1.T,16000)
+        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s2_{step}.wav',s2.T,16000)
+        break
         #### check the create data script for the rounding of az an elev so it matches in collate fn
 
     

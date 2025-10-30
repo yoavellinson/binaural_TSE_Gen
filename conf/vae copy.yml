@@ -1,0 +1,33 @@
+project: 'binaural_vae'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints'
+
+
+model:
+  inputchannels: 1
+  num_filters: 32
+  kernel_size: 4
+  norm: layer
+  act_fun: relu
+stft:
+  fs: 16000
+  fft_length: 1024
+  fft_hop: 256
+  window: hann
+dataset:
+  sofas_ppath: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts'
+  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10_mp.csv'
+  test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts/test.csv'
+  norm_sample: True
+  time_len: 5
+training:
+  num_epochs: 1000
+  lr: 2e-4
+  batch_size: 2
+  num_workers: 4
+  weight_decay: 0.05
+  mask_ratio: 0.65
+  temp: 0.1
+  pos_jitter: 0.01
+  warmup_steps: 10000
+  amp: true
+  seed: 42

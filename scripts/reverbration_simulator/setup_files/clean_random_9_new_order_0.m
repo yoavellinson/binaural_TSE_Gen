@@ -30,22 +30,22 @@ options.uncorrelatednoise   = true;                 % use uncorrelated poisson a
 
 options.mex_saveaswav       = false;                % enable or disable saving the results of sofamyroom on disk
                                                     % when using MATLAB
-receiver(1).description      = 'SOFA /home/workspace/yoavellinson/binaural_TSE_Gen/sofas/sadie/H19_48K_24bit_256tap_FIR_SOFA.sofa interp=1 norm=1 resampling=1';
-room.surface.absorption  = [0.03 0.04 0.03 0.03 0.03 0.03;
+receiver(1).description      = 'SOFA /home/workspace/yoavellinson/binaural_TSE_Gen/sofas/test_set/sadie/H7_48K_24bit_256tap_FIR_SOFA.sofa interp=1 norm=1 resampling=1';
+room.surface.absorption  = [0.03 0.05 0.17 0.52 0.52 0.52;
+                                    0.3 0.0 0.3 0.3 0.3 0.3;
                                     0.05 0.1 0.2 0.55 0.6 0.55;
-                                    0.15 0.2 0.1 0.1 0.1 0.1;
-                                    0.12 0.1 0.08 0.07 0.07 0.07;
-                                    0.3 0.2 0.15 0.05 0.05 0.05;
-                                    0.14 0.1 0.1 0.1 0.1 0.1];
-receiver(1).orientation      = [ 43.049260454466776 0 0 ];
-receiver(1).location         = [ 5.220642062547402 6.777766357359335 1.7678905703238075 ]; 
+                                    0.1 0.1 0.15 0.2 0.3 0.3;
+                                    0.4 0.35 0.2 0.15 0.05 0.05;
+                                    0.15 0.25 0.5 0.6 0.7 0.7];
+receiver(1).orientation      = [ 42.6291968823217 0 0 ];
+receiver(1).location         = [ 6.967499802747377 6.342418151993132 1.709678678567706 ]; 
 room.dimension              = [ 10 10 2.8 ];
 
-source(1).location           = [ 5.83142204379336 7.881880262519695 2.1657321409269787 ];
-source(1).orientation        = [ -118.95073954553322 -17.5 0 ];
+source(1).location           = [ 6.679986288132776 7.831368062689686 1.0025440848868468 ];
+source(1).orientation        = [ -79.07080311767831 25.0 0 ];
 source(1).description        = 'subcardioid';
-source(2).location           = [ 6.45287892000203 7.777367454352641 1.3427361662641215 ];
-source(2).orientation        = [ 219.04926045446678 15.0 0 ];
+source(2).location           = [ 7.736388374815767 7.555358443145632 1.3248739908605063 ];
+source(2).orientation        = [ -122.37080311767829 15.0 0 ];
 source(2).description        = 'subcardioid';
 options.reflectionorder     = [ 0 0 0 ];
-options.outputname			= '/home/workspace/yoavellinson/binaural_TSE_Gen/scripts/reverbration_simulator/hrtf/sadie_H19_48K_24bit_256tap_FIR_SOFA_az118.0_elev117.5_az2356.0_elev2-15.0/rt_60_1.2369889143855306/h_first';
+options.outputname			= '/home/workspace/yoavellinson/binaural_TSE_Gen/scripts/reverbration_simulator/hrtf_1k_mp/sadie_H7_48K_24bit_256tap_FIR_SOFA_az158.3_elev1-25.0_az215.0_elev2-15.0/rt_60_0.40023437188060484/h_first';
