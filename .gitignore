@@ -183,3 +183,4 @@ checkpoints_diffusion/
 csvs/
 *.pt
 *.sofa
+*.m
