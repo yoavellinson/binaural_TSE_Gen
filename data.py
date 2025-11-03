@@ -50,10 +50,11 @@ def collate_joined(batch):
     return out
 
 class PatchDBDataset(Dataset):
-    def __init__(self, hp, train=True):
+    def __init__(self, hp, train=True,debug=False):
         df = hp.dataset.train_csv_path if train else hp.dataset.test_csv_path
         self.df = pd.read_csv(df)
-
+        if debug:
+            self.df = self.df[:30]
     def __len__(self):
         return len(self.df)  # <- fix: was len(self.paths)
 
@@ -84,7 +85,7 @@ class PatchDBDataset(Dataset):
         hrtf1 = patches[idx1]
         hrtf2 = patches[idx2]
 
-        return {"patches": patches, "pos": pos, "kpm": kpm,'hrtf1':hrtf1,'hrtf2':hrtf2}
+        return {"patches": patches, "pos": pos, "kpm": kpm,'hrtf1':hrtf1,'hrtf2':hrtf2,'az1':az1,'elev1':elev1,'az2':az2,'elev2':elev2}
 
 def load_db(path):
     data = torch.load(path)
@@ -143,20 +144,30 @@ def collate_simple(batch):
         Hr2, Hi2 = H2[:C2], H2[C2:]
         hrtf1[i] = torch.complex(Hr1, Hi1)
         hrtf2[i] = torch.complex(Hr2, Hi2)
-
+    
+    half = C//2
+    patches_real = patches[:,:,:half,:]
+    patches_imag = patches[:,:,half:,:]
+    patches = torch.complex(patches_real,patches_imag).to(torch.complex64).permute(0,2,1,3)
     return {
-        "patches": patches,   # [B, Nmax, C, T]
+        "patches": patches,   # [B, 2,Nmax, T]
         "pos":     pos,       # [B, Nmax, 2]
         "kpm":     kpm,       # [B, Nmax] True=padded
         "hrtf1":   hrtf1,     # [B, C, T] complex64
         "hrtf2":   hrtf2,     # [B, C, T] complex64
+        'az1':b['az1'],
+        'az2':b['az2'],
+        'elev1':b['elev1'],
+        'elev2':b['elev2']
     }
 
 class ExtractionDatasetRevVAE(Dataset):
-    def __init__(self,hp,train=True):
+    def __init__(self,hp,train=True,debug=False):
         self.train=train
         self.hp = hp
         self.df = pd.read_csv(self.hp.dataset.train_csv_path) if train else pd.read_csv(self.hp.dataset.test_csv_path) 
+        if debug:
+            self.df = self.df[:30]
         self.fs = self.hp.stft.fs
         self.azs = {}
         tmp_az = 90

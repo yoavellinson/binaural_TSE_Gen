@@ -5,12 +5,13 @@ import wandb
 from omegaconf import OmegaConf
 from data import JoinedDataset,ExtractionDatasetRevVAE,PatchDBDataset,collate_joined
 from torch.utils.data import random_split, DataLoader
-from model import ComplexExtraction
+from model import ComplexBinauralExtraction
 from losses import SiSDRLoss,SpecMAE
 from pathlib import Path
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import os, signal, threading 
+from torch.nn.utils import clip_grad_norm_
 
 
 from tqdm import tqdm
@@ -20,7 +21,7 @@ from wandb_key import WANDB_API_KEY
 import wandb
 wandb.login(key=WANDB_API_KEY)
 
-def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, val_loader, num_epochs, device, learning_rate=0.0001, project_name="binaural_complex_extraction_many_heads"):
+def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, val_loader, num_epochs, device, learning_rate=0.0001, project_name="binaural_TSE_hrtfs"):
     """
     Trains a PyTorch model on multiple GPUs and logs metrics to Weights & Biases (wandb).
 
@@ -49,10 +50,12 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
 
     criterion_sisdr = SiSDRLoss(hp)
     criterion_mae = SpecMAE(hp)
+    max_norm = 1.0  # common starting point: 0.5–5.0
+    scaler = None 
 
     for epoch in tqdm(range(epoch_start,num_epochs), desc="Epochs"):
         model.train()
-        train_loss = 0.0
+        train_loss_sum = 0.0
 
         step_bar = tqdm(
             train_loader,
@@ -61,17 +64,21 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
             total=len(train_loader)
         )
         for step,batch in enumerate(step_bar):
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             
             Mix = batch['mix_mix']
             Y1,Y2 = batch['mix_y1'],batch['mix_y2']
             hrtf1,hrtf2 = batch['db_hrtf1'],batch['db_hrtf2']
+            hrtf_patches = batch['db_patches']
+            pos,kpm = batch['db_pos'],batch['db_kpm']
             Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
+            hrtf_patches,pos,kpm = hrtf_patches.to(device),pos.to(device),kpm.to(device)
             # Forward pass SPEAKER1
-            outputs1 = model(Mix,hrtf1)
+            outputs1 = model(Mix,hrtf1,hrtf_patches,pos,kpm)
             loss = criterion_sisdr(outputs1, Y1)*hp.loss.sisdr_coeff
             # Forward pass SPEAKER2
-            outputs2 = model(Mix,hrtf2)
+            outputs2 = model(Mix,hrtf2,hrtf_patches,pos,kpm)
+
             loss += criterion_sisdr(outputs2,Y2)*hp.loss.sisdr_coeff
             sisdr_loss = loss.item()
             loss = loss.to(device)
@@ -82,15 +89,32 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
 
             # Backward pass
             loss.backward()
+            total_norm = clip_grad_norm_(model.parameters(), max_norm)
             optimizer.step()
+            loss_val         = float(loss.detach().cpu())
+            sisdr_loss_val   = float(sisdr_loss)
+            mae_loss_val     = float(mae_loss.detach().cpu())
+            total_norm_val   = float(total_norm.detach().cpu()) if torch.is_tensor(total_norm) else float(total_norm)
 
-            # Metrics
-            train_loss += loss.item() * Mix.size(0)
-            wandb.log({"step_loss": loss.item(), "step": step_start+step + 1 + epoch * len(train_loader),
-                       "step_sisdr_loss":sisdr_loss,
-                        "step_mae_loss":mae_loss})
+            global_step = step_start + step + 1 + epoch * len(train_loader)
+            wandb.log({
+                "step": global_step,
+                "train/step_loss": loss_val,
+                "train/step_sisdr_loss": sisdr_loss_val,
+                "train/step_mae_loss": mae_loss_val,
+                "train/grad_total_norm": total_norm_val,
+                "gpu/allocated_MB": torch.cuda.memory_allocated(device) / 1024**2,
+                "gpu/reserved_MB":  torch.cuda.memory_reserved(device)  / 1024**2,
+            }, step=global_step)
 
-            step_bar.set_postfix({"Train Loss": loss.item()})
+            train_loss_sum += loss_val * Mix.size(0)
+
+            del outputs1, outputs2, Mix, Y1, Y2, hrtf1, hrtf2, hrtf_patches, pos, kpm, loss, mae_loss, sisdr_loss_val
+
+            if (step + 1) % 100 == 0: torch.cuda.empty_cache()
+
+            step_bar.set_postfix({"Train Loss": loss_val})
+            train_loss = train_loss_sum / len(train_loader.dataset)
         train_loss /= len(train_loader.dataset)
 
         # Validation loop
@@ -99,14 +123,19 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
 
         with torch.no_grad():
             for val_batch in tqdm(val_loader, desc="Validation Steps", leave=False):
+
                 Mix = val_batch['mix_mix']
                 Y1,Y2 = val_batch['mix_y1'],val_batch['mix_y2']
                 hrtf1,hrtf2 = val_batch['db_hrtf1'],val_batch['db_hrtf2']
+                hrtf_patches = val_batch['db_patches']
+                pos,kpm = val_batch['db_pos'],val_batch['db_kpm']
+
                 Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
+                hrtf_patches,pos,kpm = hrtf_patches.to(device),pos.to(device),kpm.to(device)
                 # Forward pass SPEAKER1
-                val_outputs1 = model(Mix,hrtf1)
+                val_outputs1 = model(Mix,hrtf1,hrtf_patches,pos,kpm)
                 val_loss_i = criterion_sisdr(val_outputs1, Y1)*hp.loss.sisdr_coeff
-                val_outputs2 = model(Mix,hrtf2)
+                val_outputs2 = model(Mix,hrtf2,hrtf_patches,pos,kpm)
                 val_loss_i += criterion_sisdr(val_outputs2, Y2)*hp.loss.sisdr_coeff
                 val_loss += val_loss_i.item() * Mix.size(0)
 
@@ -182,7 +211,7 @@ if __name__=="__main__":
     device_idx=0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_complex_conf.yml')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_complex_conf_hrtf_enc.yml')
 
     ds_db  = PatchDBDataset(hp, train=True,debug=False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=False)
@@ -208,7 +237,7 @@ if __name__=="__main__":
     )    
 
 
-    model =ComplexExtraction(hp).to(device)
+    model =ComplexBinauralExtraction(hp).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
     runs = sorted(Path(hp.training.checkpoint_dir).glob("**/*.pth"), key=os.path.getmtime)
     resume=False
