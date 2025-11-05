@@ -4,10 +4,10 @@ import soundfile as sf
 import torch
 import torchaudio.functional as F
 import numpy as np
-from losses import SiSDRLoss,PESQloss,SiSDRLossFromSTFT
+from losses import PESQloss,SiSDRLossFromSTFT
 from omegaconf import OmegaConf
 from data import ExtractionDatasetRevVAE,PatchDBDataset,JoinedDataset,collate_joined
-from model import ComplexBinauralExtraction
+from NBSS.NBSS import NBSS,pit_sisdr_stft
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     device_idx = 1
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev')
+    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS')
     hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_complex_conf_hrtf_enc.yml')
     ds_db  = PatchDBDataset(hp, train=False,debug=True)
     ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=True)
@@ -68,9 +68,27 @@ if __name__ == "__main__":
     sisdri=[]
 
     with torch.no_grad():
-        model =ComplexBinauralExtraction(hp).to(device)
-
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/complex_with_hrtf_patches/zany-vortex-33_ComplexBinauralExtraction_lr_0.0002_bs_2_loss_sisdr_L1_rev/model_epoch_best.pth"
+        model = NBSS(n_channel=2,
+                    n_speaker=2,
+                    arch="NBC2",
+                    arch_kwargs={
+                        "n_layers": 6, # 12 for large
+                        "dim_hidden": 96, # 192 for large
+                        "dim_ffn": 192, # 384 for large
+                        "block_kwargs": {
+                            'n_heads': 2,
+                            'dropout': 0,
+                            'conv_kernel_size': 3,
+                            'n_conv_groups': 8,
+                            'norms': ("LN", "GBN", "GBN"),
+                            'group_batch_norm_kwargs': {
+                                'group_size': 257,
+                                'share_along_sequence_dim': False,
+                            },
+                        }
+                    },)
+        model = model.to(device)
+        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS/amber-microwave-1_NBSS_lr_0.001_bs_4_loss_sisdr_L1_rev/model_epoch_best.pth"
         load_checkpoint(model,path=checkpoint_path,device=device)
         model.eval()
         i=0
@@ -80,12 +98,9 @@ if __name__ == "__main__":
             Y1,Y2 = batch['mix_y1'],batch['mix_y2']
             hrtf1,hrtf2 = batch['db_hrtf1'],batch['db_hrtf2']
             hrtf_patches = batch['db_patches']
-            pos,kpm = batch['db_pos'],batch['db_kpm']
             Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
-            hrtf_patches,pos,kpm = hrtf_patches.to(device),pos.to(device),kpm.to(device)
-            print(hrtf1.shape)
-            exit(0)
-            outputs1 = model(Mix,hrtf1,hrtf_patches,pos,kpm)
+        
+            outputs1 = model(Mix,hrtf1)
             az1,elev1,az2,elev2 =batch['db_az1'],batch['db_elev1'],batch['db_az2'],batch['db_elev2']
 
             #sisdr
@@ -94,7 +109,7 @@ if __name__ == "__main__":
             sisdr_in_1 = criterion_sisdr(Mix,Y1)
             sisdr_in.append(-sisdr_in_1.cpu())
             
-            sisdri.append(-sisdr_1+sisdr_in_1)
+            sisdri.append((-sisdr_1+sisdr_in_1).cpu())
 
             # pesq
             pesq_out_1 = criterion_pesq.mos(outputs1,Y1).max()
@@ -120,7 +135,7 @@ if __name__ == "__main__":
             # dnsmos_dict_in1 =dnsmos(mix[1,:],16000,False)
 
             if not one_speaker:
-                outputs2 = model(Mix,hrtf2,hrtf_patches,pos,kpm)
+                outputs2 = model(Mix,hrtf2)
                 sisdr_2 = criterion_sisdr(outputs2,Y2)
                 sisdr_out.append(-sisdr_2.cpu())
                 sisdr_in_2 = criterion_sisdr(Mix,Y2)
@@ -134,18 +149,17 @@ if __name__ == "__main__":
                 sf.write(out_dir/f'y2_{step}_az_{int(az2)}_elev_{int(elev2)}.wav',y2.T,ds_mix.fs)
                 y_hat_2 = ds_mix.iSTFT(outputs2).detach().cpu()
                 sf.write(out_dir/f'y_hat_2_{step}_az_{int(az2)}_elev_{int(elev2)}_sisdr_{sisdr_2:.3f}.wav',y_hat_2.T,ds_mix.fs)
-                
         # Ensure 1D arrays
         sisdr_in = reject_outliers(np.ravel(sisdr_in))
         sisdr_out = reject_outliers(np.ravel(sisdr_out))
-        # sisdri = reject_outliers(np.ravel(sisdri))
+        sisdri = reject_outliers(np.ravel(sisdri))
 
         pesq_in = reject_outliers(np.ravel(pesq_in))
         pesq_out = reject_outliers(np.ravel(pesq_out))
         # dnsmos_ovrl = reject_outliers(np.ravel(dnsmos_ovrl))
         # dnsmos_sig = reject_outliers(np.ravel(dnsmos_sig))
         # dnsmos_bak = reject_outliers(np.ravel(dnsmos_bak))
-        # sisdri_mean = np.mean(sisdri)
+        sisdri_mean = np.mean(sisdri)
 
 
         # Calculate means
@@ -158,7 +172,7 @@ if __name__ == "__main__":
         # Create two side-by-side histograms
         fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
         # fig.suptitle(f'SI-SDRi={sisdri_mean:.3f}\nDNSMOS OVRL/SIG/BAK:{mean_dnsmos['OVRL']:.3f}/{mean_dnsmos['SIG']:.3f}/{mean_dnsmos['BAK']:.3f}')
-        # fig.suptitle(f'SI-SDRi={sisdri_mean:.3f}')
+        fig.suptitle(f'SI-SDRi={sisdri_mean:.3f}')
         # SI-SDR Histogram
         axes[0].hist(sisdr_in, bins=30, alpha=0.5, color='blue', edgecolor='black', label="SI-SDR In")
         axes[0].hist(sisdr_out, bins=30, alpha=0.5, color='red', edgecolor='black', label="SI-SDR Out")

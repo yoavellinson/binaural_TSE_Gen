@@ -9,7 +9,7 @@ from scipy import signal
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data._utils.collate import default_collate
-
+from conf.conf import DTYPE
 class JoinedDataset(Dataset):
     """
     Combines two datasets sharing the same CSV/row order.
@@ -55,12 +55,18 @@ class PatchDBDataset(Dataset):
         self.df = pd.read_csv(df)
         if debug:
             self.df = self.df[:30]
+        self.hp = hp
     def __len__(self):
         return len(self.df)  # <- fix: was len(self.paths)
 
     def __getitem__(self, idx):
         line = self.df.iloc[idx]
-        d = load_db(line['pt_path'])
+        if self.hp.stft.fft_length == 512:
+            p =line['sofa_path']
+            p = p.replace('sofas','pts_512').replace('.sofa','.pt')
+            d = load_db(p)
+        else:
+            d = load_db(line['pt_path'])
         patches = d['patches']    # expect [N, C, T]
         pos     = d['pos']        # [N, 2]
         N, C, T = patches.shape 
@@ -127,8 +133,8 @@ def collate_simple(batch):
     kpm     = torch.ones( B, Nmax,       dtype=torch.bool, device=device)  # True=padded
 
     # per-sample (complex)
-    hrtf1 = torch.empty(B, C//2, T, dtype=torch.complex64, device=device)
-    hrtf2 = torch.empty(B, C//2, T, dtype=torch.complex64, device=device)
+    hrtf1 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
+    hrtf2 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
 
     # --- copy and restore ---
     for i, b in enumerate(batch):
@@ -148,7 +154,7 @@ def collate_simple(batch):
     half = C//2
     patches_real = patches[:,:,:half,:]
     patches_imag = patches[:,:,half:,:]
-    patches = torch.complex(patches_real,patches_imag).to(torch.complex64).permute(0,2,1,3)
+    patches = torch.complex(patches_real,patches_imag).to(DTYPE).permute(0,2,1,3)
     return {
         "patches": patches,   # [B, 2,Nmax, T]
         "pos":     pos,       # [B, Nmax, 2]
@@ -217,14 +223,14 @@ class ExtractionDatasetRevVAE(Dataset):
         return self.stft_sample(x)
     
     def stft_sample(self,x):
-        X = torch.stft(torch.squeeze(x),n_fft=self.hp.stft.fft_length, hop_length=self.hp.stft.fft_hop, window=torch.hann_window(self.hp.stft.fft_length), return_complex=True).to(torch.complex64)
+        X = torch.stft(torch.squeeze(x),n_fft=self.hp.stft.fft_length, hop_length=self.hp.stft.fft_hop, window=torch.hann_window(self.hp.stft.fft_length), return_complex=True).to(DTYPE)
         X[0:2, :] = X[0:2, :] * 0.001
         # mx_x = torch.max(torch.max(torch.abs(torch.real(X)) , torch.max(torch.abs(torch.imag(X)) )))
         # X = X/mx_x
         return X
     
     def hrtf_preprocces(self,hrtf):
-        HRTF = torch.fft.fft(hrtf,self.hp.stft.fft_length).to(torch.complex64)
+        HRTF = torch.fft.fft(hrtf,self.hp.stft.fft_length).to(DTYPE)
         HRTF = HRTF[:,1:self.hp.stft.fft_length//2 +1]
         return HRTF
 

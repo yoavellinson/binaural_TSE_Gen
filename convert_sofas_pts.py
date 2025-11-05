@@ -36,7 +36,7 @@ def process_one(sofa_path_str: str, root_in_str: str, root_out_str: str, overwri
             return f"[skip] {out_path}"
 
         # Open/read in this process (important for HDF5 thread-safety)
-        db = SOFA_HRTF_db(str(sofa_path))
+        db = SOFA_HRTF_db(str(sofa_path),nfft=512)
         patches, pos = db.get_positions()
 
         patches = torch.as_tensor(patches).detach().cpu().contiguous()
@@ -51,7 +51,7 @@ def process_one(sofa_path_str: str, root_in_str: str, root_out_str: str, overwri
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-r","--root_in",default='/home/workspace/yoavellinson/binaural_TSE_Gen/sofas', type=Path, help="Root directory to scan for .sofa files")
-    ap.add_argument("-o", "--root_out", type=Path, default='/home/workspace/yoavellinson/binaural_TSE_Gen/pts', help="Output root; mirrors structure")
+    ap.add_argument("-o", "--root_out", type=Path, default='/home/workspace/yoavellinson/binaural_TSE_Gen/pts_512', help="Output root; mirrors structure")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count(), help="Processes to use")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()

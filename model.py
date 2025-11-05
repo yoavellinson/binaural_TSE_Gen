@@ -5,6 +5,7 @@ import torch.functional as F
 import math
 eps = torch.exp(torch.tensor(-6))
 
+DTYPE=torch.complex64
        
 class CLeakyReLU(nn.LeakyReLU):
     def forward(self, xr, xi):
@@ -94,7 +95,7 @@ class MaskedMean(nn.Module):
 
 
 class GlobalToLatent(nn.Module):
-    def __init__(self, in_dim=512, latent_dim=128,dtype=torch.complex64):
+    def __init__(self, in_dim=512, latent_dim=128,dtype=DTYPE):
         super().__init__()
         self.mu     = nn.Sequential(GlobLNComplex(in_dim), nn.Linear(in_dim, latent_dim,dtype=dtype))
         self.logvar = nn.Sequential(GlobLNComplex(in_dim), nn.Linear(in_dim, latent_dim,dtype=dtype))
@@ -137,9 +138,9 @@ class CFiLM2dComplex(nn.Module):
         super().__init__()
         self.C = C
         self.use_bias = use_bias
-        self.fc1 = nn.Linear(z_dim, max(z_dim, 2*C),dtype=torch.complex64)
+        self.fc1 = nn.Linear(z_dim, max(z_dim, 2*C),dtype=DTYPE)
         self.act = complex_relu() if use_nonlinearity else nn.Identity()
-        self.fc2 = nn.Linear(max(z_dim, 2*C), (2 if use_bias else 1) * C,dtype=torch.complex64)
+        self.fc2 = nn.Linear(max(z_dim, 2*C), (2 if use_bias else 1) * C,dtype=DTYPE)
         nn.init.zeros_(self.fc2.weight)
         if self.fc2.bias is not None:
             nn.init.zeros_(self.fc2.bias)
@@ -195,7 +196,7 @@ class CDownBlock(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(nc, output_nc, kernel_size,
                               stride=stride, padding=padding,
-                              bias=False, dtype=torch.complex64)
+                              bias=False, dtype=DTYPE)
         self.norm = GlobLNComplex(output_nc)  # your complex norm
         self.film = CFiLM2dComplex(z_dim=z_dim, C=output_nc, use_bias=True)
         self.act  = complex_relu()            # your complex activation
@@ -232,7 +233,7 @@ class CEncoder(nn.Module):
         '''
         output size: [(in_size-kernel_size+2*padding)/stride]+1
         '''
-        downconv = nn.Conv2d(nc, output_nc, kernel_size, stride=stride,padding=padding, bias=False,dtype=torch.complex64)
+        downconv = nn.Conv2d(nc, output_nc, kernel_size, stride=stride,padding=padding, bias=False,dtype=DTYPE)
         downnorm = GlobLNComplex(output_nc)
         act_fun=complex_relu()
         return nn.Sequential(*[downconv, downnorm, act_fun])
@@ -285,32 +286,43 @@ class CDecoder(nn.Module):
         output_size: (in_size-1)*stride-2*padding+kernel_size
         '''
    
-        upconv = nn.ConvTranspose2d(nc, output_nc, kernel_size, stride=stride, padding=padding,dtype=torch.complex64)
+        upconv = nn.ConvTranspose2d(nc, output_nc, kernel_size, stride=stride, padding=padding,dtype=DTYPE)
         upnorm = GlobLNComplex(output_nc)
         act_fun=complex_relu()
         return nn.Sequential(*[upconv, upnorm, act_fun])
 
     def last_layer(self, nc, output_nc, kernel_size=3):
         postconv1 = nn.Conv2d(
-            nc, output_nc, kernel_size=kernel_size, stride=1, padding=1,dtype=torch.complex64)
+            nc, output_nc, kernel_size=kernel_size, stride=1, padding=1,dtype=DTYPE)
 
         return nn.Sequential(*[postconv1])
        
 class _LayerNorm(nn.Module):
     """Layer Normalization base class."""
 
-    def __init__(self, channel_size):
-        super(_LayerNorm, self).__init__()
+    def __init__(self, channel_size, dtype=torch.complex64):
+        super().__init__()
         self.channel_size = channel_size
-        self.gamma = nn.Parameter(torch.ones(channel_size),
-                                  requires_grad=True)
-        self.beta = nn.Parameter(torch.zeros(channel_size),
-                                 requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(channel_size, dtype=dtype))
+        self.beta  = nn.Parameter(torch.zeros(channel_size, dtype=dtype))
 
     def apply_gain_and_bias(self, normed_x):
-        """ Assumes input of size `[batch, chanel, *]`. """
-        return (self.gamma * normed_x.transpose(1, -1) +
-                self.beta).transpose(1, -1)
+        """
+        normed_x: [B, C, *]  (channel = dim 1)
+        Broadcast gamma/beta over all trailing dims with no transposes.
+        """
+        B, C = normed_x.shape[:2]
+        # [1, C, 1, 1, ...] so it broadcasts over spatial/temporal dims
+        shape = (1, C) + (1,) * (normed_x.ndim - 2)
+
+        # Ensure params match input dtype/device (important for complex)
+        gamma = self.gamma.to(dtype=normed_x.dtype, device=normed_x.device).view(shape)
+        beta  = self.beta.to(dtype=normed_x.dtype,  device=normed_x.device).view(shape)
+
+        # Avoid huge temporaries created by transpose+contiguous
+        out = normed_x * gamma
+        out = out + beta
+        return out
 
 class GlobLNComplex(_LayerNorm):
     """Global Layer Normalization for complex-valued tensors."""
@@ -383,9 +395,9 @@ class CBottleneck(nn.Module):
         super().__init__()
         self.hp=hp
         embed_dim = 512
-        hrtf_dim = hp.stft.fft_length//2 +1
+        hrtf_dim = hp.stft.fft_length//2
         ngf = hp.model.num_filters
-        self.fc1= nn.Linear((ngf//2)*embed_dim,embed_dim,dtype=torch.complex64)
+        self.fc1= nn.Linear((ngf//4)*embed_dim,embed_dim,dtype=DTYPE)
         t = math.floor(((self.hp.dataset.time_len*self.hp.stft.fs))/self.hp.stft.fft_hop)+1
         self.self_attention_mix = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
 
@@ -399,13 +411,15 @@ class CBottleneck(nn.Module):
         self.self_attention_bn_3 = CustomMultiheadAttention(embed_dim=embed_dim,num_heads=8)
         self.globln_3 =GlobLNComplex(t)
 
-        self.fc_hrtf = nn.Linear(hrtf_dim*2,512,dtype=torch.complex64)
-        self.attn_hrtf = CustomMultiheadAttention(embed_dim=hrtf_dim,num_heads=9)
+        self.fc_hrtf = nn.Linear(hrtf_dim*2,512,dtype=DTYPE)
+        self.attn_hrtf = CustomMultiheadAttention(embed_dim=hrtf_dim,num_heads=8)
         self.globln_hrtf =GlobLNComplex(2)        
-        self.output_proj =nn.Linear(embed_dim,embed_dim*(ngf//2),dtype=torch.complex64)
+        self.output_proj =nn.Linear(embed_dim,embed_dim*(ngf//4),dtype=DTYPE)
      
 
     def forward(self,emb_mix,hrtf):
+            if hrtf.shape[-1] == (self.hp.stft.fft_length//2 +1):
+                hrtf = hrtf[:,:,1:]
             B = emb_mix.shape[0]
             E = emb_mix.shape[1]
             C = emb_mix.shape[2]
@@ -446,7 +460,7 @@ class complex_relu(nn.Module):
         return torch.complex(torch.nn.ReLU()(z.real), torch.nn.ReLU()(z.imag))
     
 class CustomMultiheadAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.0,dtype=torch.complex64):
+    def __init__(self, embed_dim, num_heads, dropout=0.0,dtype=DTYPE):
         """
         Args:
             embed_dim (int): Dimension of the input embeddings.

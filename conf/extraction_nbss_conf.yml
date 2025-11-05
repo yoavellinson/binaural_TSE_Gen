@@ -1,14 +1,29 @@
-project: 'binaural_vae'
-checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints'
+project: 'binaural_NBSS'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS'
 
 
 model:
   inputchannels: 1
-  num_filters: 32
+  num_filters: 64
   kernel_size: 4
   norm: layer
   act_fun: relu
+
   output_channels: 2
+  n_channel: 2
+  n_layers: 6 # 8 for small, 12 for large
+  dim_hidden: 96, # 192 for large
+  dim_ffn: 192, # 384 for large
+  block:
+    n_heads: 2
+    dropout: 0
+    conv_kernel_size: 3
+    n_conv_groups: 8
+    norms: ("LN", "GBN", "GBN")
+    group_batch_norm: 
+      group_size: 257
+      share_along_sequence_dim: False
+
 stft:
   fs: 16000
   fft_length: 512
@@ -23,13 +38,13 @@ dataset:
   n_channels: 2
 loss:
   sisdr_coeff: 0.5
-  mae_coeff: 10
-  pesq_coeff: 0.5
+  mae_coeff: 0
+
 training:
   num_epochs: 1000
   lr: 1e-3
-  batch_size: 2
-  num_workers: 2
+  batch_size: 4
+  num_workers: 4
   weight_decay: 0.05
   mask_ratio: 0.65
   temp: 0.1
@@ -37,4 +52,4 @@ training:
   warmup_steps: 10000
   amp: true
   seed: 42
-  checkpoint_dir: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/complex_with_hrtf_patches'
+  checkpoint_dir: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS'
