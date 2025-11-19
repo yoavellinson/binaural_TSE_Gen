@@ -1,0 +1,108 @@
+project: 'HRTF_VAE'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/VAE'
+model:
+  inputchannels: 1
+  num_filters: 64
+  kernel_size: 4
+  norm: layer
+  act_fun: relu
+  ref_channel: 0
+  output_channels: 2
+  n_channel: 2
+  n_layers: 8 # 12 for large
+  dim_hidden: 96 # 192 for large
+  dim_ffn: 192  # 384 for large
+  block:
+    n_heads: 2
+    dropout: 0
+    conv_kernel_size: 3
+    n_conv_groups: 8
+    norms: ["LN", "GBN", "GBN"]
+    group_batch_norm: 
+      group_size: 257
+      share_along_sequence_dim: False
+
+stft:
+  fs: 16000
+  fft_length: 512
+  fft_hop: 128
+  window: hann
+
+dataset:
+  sofas_ppath: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts'
+  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp.csv'
+  test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv'
+  norm_sample: True
+  time_len: 5
+  n_channels: 2
+
+loss:
+  sisdr_coeff: 0.5
+  mae_coeff: 10
+  pesq_coeff: 0.5
+
+training:
+  num_epochs: 1000
+  lr: 1e-3
+  batch_size: 1
+  num_workers: 4
+  weight_decay: 0.05
+  seed: 42
+
+
+vae:
+  exp:
+    seed: 0
+
+  # data:
+  #   max_freq: 16000.0
+  #   num_freq_bin: 128
+  #   fs_up: 384000.0
+  #   hutubs:
+  #     path: "./data/hutubs"
+  #     sub_id:
+  #       train: [0, 77]
+  #       valid: [77, 87]
+  #       test:  [88, 95]
+  #     front_id: 202
+  #   riec:
+  #     path: "./data/riec"
+  #     sub_id:
+  #       train: [0, 86]
+  #       valid: [86, 97]
+  #       test:  [97, 105]
+  #     front_id: 216
+
+  training:
+    checkpoint_path: null
+    epochs: 1400
+    save_interval: 200
+    lr: 0.001
+    lr_gamma: 0.1
+    lr_milestones: [800, 1200]
+    loss_weight:
+      lsd: 1.0
+      ae_itd: 2500.0
+    num_mes_pos_train: ["all", 256, 169, 100, 49, 16, 9, 6, 4]
+    num_mes_pos_valid: ["all"]
+
+  architecture:
+    encoder:
+      num_layers: 2
+      mid_dim: 16
+      out_dim: 64
+    decoder:
+      num_layers: 2
+      in_dim: 64  # == encoder.out_dim
+      mid_dim: 16
+    weight_bias_generator:
+      num_layers: 2
+      mid_dim: 64
+    fourier_feature_mapping:
+      num_features:
+        source_position: 16
+        frequency: 8
+      trainable: true
+    freq_norm: 16000.0
+    radius_norm: [360,90]
+    num_mes_norm: 865.0

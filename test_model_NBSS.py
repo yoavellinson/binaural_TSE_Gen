@@ -5,12 +5,12 @@ import torch
 import torchaudio.functional as F
 import numpy as np
 from losses import PESQloss,SiSDRLossFromSTFT
-from omegaconf import OmegaConf
 from data import ExtractionDatasetRevVAE,PatchDBDataset,JoinedDataset,collate_joined
-from NBSS.NBSS import NBSS,pit_sisdr_stft
+from NBSS.NBSS import NBSS
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from omegaconf import OmegaConf
 
 def reject_outliers(data, m=3):
     return data[abs(data - np.mean(data)) < m * np.std(data)]
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
     out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS')
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_complex_conf_hrtf_enc.yml')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
     ds_db  = PatchDBDataset(hp, train=False,debug=True)
     ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=True)
     joined_ds = JoinedDataset(ds_db, ds_mix)
@@ -68,27 +68,9 @@ if __name__ == "__main__":
     sisdri=[]
 
     with torch.no_grad():
-        model = NBSS(n_channel=2,
-                    n_speaker=2,
-                    arch="NBC2",
-                    arch_kwargs={
-                        "n_layers": 6, # 12 for large
-                        "dim_hidden": 96, # 192 for large
-                        "dim_ffn": 192, # 384 for large
-                        "block_kwargs": {
-                            'n_heads': 2,
-                            'dropout': 0,
-                            'conv_kernel_size': 3,
-                            'n_conv_groups': 8,
-                            'norms': ("LN", "GBN", "GBN"),
-                            'group_batch_norm_kwargs': {
-                                'group_size': 257,
-                                'share_along_sequence_dim': False,
-                            },
-                        }
-                    },)
+        model = NBSS(hp)
         model = model.to(device)
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS/amber-microwave-1_NBSS_lr_0.001_bs_4_loss_sisdr_L1_rev/model_epoch_best.pth"
+        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/sparkling-armadillo-15_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
         load_checkpoint(model,path=checkpoint_path,device=device)
         model.eval()
         i=0

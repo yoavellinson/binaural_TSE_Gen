@@ -1,0 +1,163 @@
+import math
+import numpy as np
+import torch as th
+import torch.nn as nn
+
+from torch.distributions.multivariate_normal import MultivariateNormal
+
+########### edit dtypes in modules
+class ResLinearBlock(nn.Module):
+    def __init__(self, channel=64, droprate=0.0, norm=None, bn_c=None):
+        super().__init__()
+        if norm == 'ln':
+            self.layers1 = nn.Sequential(
+                nn.Linear(channel, channel),
+                nn.LayerNorm(channel),
+                nn.Mish(),
+                nn.Dropout(droprate),
+                nn.Linear(channel, channel)
+            )
+            self.layers2 = nn.Sequential(
+                nn.LayerNorm(channel),
+                nn.Mish(),
+                nn.Dropout(droprate)
+            )
+        elif norm == 'bn':
+            self.layers1 = nn.Sequential(
+                nn.Linear(channel, channel),
+                nn.BatchNorm1d(bn_c),
+                nn.Mish(),
+                nn.Dropout(droprate),
+                nn.Linear(channel, channel)
+            )
+            self.layers2 = nn.Sequential(
+                nn.BatchNorm1d(bn_c),
+                nn.Mish(),
+                nn.Dropout(droprate)
+            )
+        elif norm is None:
+            self.layers1 = nn.Sequential(
+                nn.Linear(channel, channel),
+                nn.Mish(),
+                nn.Dropout(droprate),
+                nn.Linear(channel, channel)
+            )
+            self.layers2 = nn.Sequential(
+                nn.Mish(),
+                nn.Dropout(droprate)
+            )
+
+    def forward(self, input):
+        out_mid = self.layers1(input)
+        in_mid = out_mid + input  # skip connection
+        out = self.layers2(in_mid)
+        return out
+
+
+class HyperLinear(nn.Module):
+    def __init__(self, ch_in, ch_out, input_size=3, ch_hidden=32, num_hidden=1, use_res=True, droprate=0.0,dtype=th.float64):
+        super().__init__()
+        self.ch_in = ch_in
+        self.ch_out = ch_out
+
+        # ==== weight ======
+        modules = [
+            nn.Linear(input_size, ch_hidden,dtype=dtype),
+            nn.LayerNorm(ch_hidden,dtype=dtype),
+            nn.Mish(),
+            nn.Dropout(droprate)]
+        if not use_res:
+            for _ in range(num_hidden):
+                modules.extend([
+                    nn.Linear(ch_hidden, ch_hidden,dtype=dtype),
+                    nn.LayerNorm(ch_hidden,dtype=dtype),
+                    nn.Mish(),
+                    nn.Dropout(droprate)
+                ])
+        else:
+            for _ in range(round(num_hidden / 2)):
+                modules.extend([ResLinearBlock(ch_hidden, droprate=0.0)])
+        modules.extend([
+            nn.Linear(ch_hidden, ch_out * ch_in,dtype=dtype)
+        ])
+        self.weight_layers = nn.Sequential(*modules)
+
+        # ==== bias ======
+        modules = [
+            nn.Linear(input_size, ch_hidden,dtype=dtype),
+            nn.LayerNorm(ch_hidden,dtype=dtype),
+            nn.Mish(),
+            nn.Dropout(droprate)]
+        if not use_res:
+            for _ in range(num_hidden):
+                modules.extend([
+                    nn.Linear(ch_hidden, ch_hidden,dtype=dtype),
+                    nn.LayerNorm(ch_hidden,dtype=dtype),
+                    nn.Mish(),
+                    nn.Dropout(droprate)
+                ])
+        else:
+            for _ in range(round(num_hidden / 2)):
+                modules.extend([ResLinearBlock(ch_hidden, droprate=0.0)])
+        modules.extend([
+            nn.Linear(ch_hidden, ch_out,dtype=dtype)
+        ])
+        self.bias_layers = nn.Sequential(*modules)
+
+    def forward(self, input):
+        x, z = input
+        batches = list(x.shape)[:-1]  # (...,)
+        num_batches = math.prod(batches)
+
+        weight = self.weight_layers(z)  # (..., ch_out * ch_in)
+        weight = weight.reshape([num_batches, self.ch_out, self.ch_in])  # (num_batches, ch_out, ch_in)
+        bias = self.bias_layers(z)  # (..., ch_out)
+
+        wx = th.matmul(weight, x.reshape(num_batches, -1, 1)).reshape(batches + [-1])
+
+        return (wx + bias, z)
+
+
+class HyperLinearBlock(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim=32, num_hidden=1, droprate=0.0, use_res=True, cond_dim=3, post_prcs=True):
+        super().__init__()
+        self.hyperlinear = HyperLinear(in_dim, out_dim, ch_hidden=hidden_dim, num_hidden=num_hidden, use_res=use_res, input_size=cond_dim, droprate=droprate)
+        if post_prcs:
+            self.layers_post = nn.Sequential(
+                nn.LayerNorm(out_dim),
+                nn.Mish(),
+                nn.Dropout(droprate)
+            )
+        else:
+            self.layers_post = nn.Sequential(
+                nn.Identity()
+            )
+
+    def forward(self, input):
+        y, z = self.hyperlinear(input)  # input: (x, z)
+        y = self.layers_post(y)
+
+        return (y, z)
+
+
+class FourierFeatureMapping(nn.Module):
+    def __init__(self, num_features, input_dim, trainable=True):
+        super(FourierFeatureMapping, self).__init__()
+        self.num_features = num_features
+        self.input_dim = input_dim
+        multinormdist = MultivariateNormal(th.zeros(self.input_dim), th.eye(self.input_dim))
+        self.v = multinormdist.sample(sample_shape=th.Size([self.num_features]))  # self.num_features, dim_data
+        if trainable:
+            self.v = nn.Parameter(self.v)
+        else:
+            self.v = self.v.cuda()
+
+    def forward(self, x):
+        x_shape = list(x.shape)  # (x.shape[:-1], D)
+        x_shape[-1] = self.num_features    # (x.shape[:-1], J)
+        x = x.reshape(-1, self.input_dim).permute(1, 0)  # (D, *)
+        vx = th.matmul(self.v.to(x.device,x.dtype), x)  # (J, *)
+        vx = vx.permute(1, 0).reshape(x_shape)  # (J, *) -> (*, J) -> (x.shape[:-1], J)
+        fourierfeatures = th.cat((th.sin(2 * np.pi * vx), th.cos(2 * np.pi * vx)), dim=-1)  # (x.shape[:-1], 2J)
+
+        return fourierfeatures

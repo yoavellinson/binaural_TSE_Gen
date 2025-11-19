@@ -24,7 +24,7 @@ def train_step(model_vae, batch, optimizer, beta, mask_ratio=0.65, pos_jitter=0.
     xy   = batch['pos'].to(device, non_blocking=True)       # [B, N, 2]
     kpm  = batch['kpm'].to(device, non_blocking=True)       # [B, N] True=PAD
 
-    B, N,C, T = x_in.shape
+    B, C,N, T = x_in.shape
     mae_keep_A = make_mae_keep(B, N, mask_ratio, device)
     mae_keep_B = make_mae_keep(B, N, mask_ratio, device)
 
@@ -36,9 +36,13 @@ def train_step(model_vae, batch, optimizer, beta, mask_ratio=0.65, pos_jitter=0.
 
     if amp:
         assert scaler is not None
-        with torch.amp.autocast('cuda',dtype=torch.float16):
+        with torch.amp.autocast('cuda',dtype=torch.float32):
             x_hat_A, zA, muA, logvarA = model_vae(x_in, xyA, kpm, scale=scale_xy)
             x_hat_B, zB, muB, logvarB = model_vae(x_in, xyB, kpm, scale=scale_xy)
+            x_in = torch.view_as_real(x_in).permute(0,1,4,2,3)
+            B,C,RI,N,F = x_in.shape
+            x_in = x_in.reshape(B,C*RI,N,F).permute(0,2,1,3)
+            
             L_rec = mae_recon_loss(x_hat_A, x_in, mae_keep_A, kpm) + mae_recon_loss(x_hat_B, x_in, mae_keep_B, kpm)
             L_kl  = kl_divergence(muA, logvarA) + kl_divergence(muB, logvarB)
             L_con = info_nce(zA, zB, temperature=temp)
@@ -89,13 +93,14 @@ def main(device=None,debug=False):
     )
 
     # Model / Opt
+    scaler = torch.amp.GradScaler('cuda',enabled=bool(hp.training.amp))
+
     model_vae = PatchDBVAE(hp).to(device)
     optimizer = torch.optim.AdamW(
         model_vae.parameters(),
         lr=float(hp.training.lr),
         weight_decay=float(hp.training.weight_decay),
     )
-    scaler = torch.amp.GradScaler('cuda',enabled=bool(hp.training.amp))
 
     os.makedirs(str(hp.checkpoint_path), exist_ok=True)
 
@@ -111,7 +116,7 @@ def main(device=None,debug=False):
                 beta=beta,
                 mask_ratio=float(hp.training.mask_ratio),
                 pos_jitter=float(hp.training.pos_jitter),
-                scale_xy=(1.0, 1.0),
+                scale_xy=(360, 90),
                 temp=float(hp.training.temp),
                 amp=bool(hp.training.amp),
                 scaler=scaler,

@@ -144,7 +144,7 @@ class GlobalToLatent(nn.Module):
         return z, mu, logvar
     
 class CondUNetDecoderFiLM(nn.Module):
-    def __init__(self, hp, d_latent=128, cpos=34, base=64, kernel_size=(1,4), stride=(1,2), padding=(0,1)):
+    def __init__(self, hp, d_latent=128, cpos=34, kernel_size=(1,4), stride=(1,2), padding=(0,1)):
         super().__init__()
         # Example: 5 up stages mirroring your U-Net; adapt channels as you want
         ngf = hp.model.num_filters
@@ -170,6 +170,9 @@ class CondUNetDecoderFiLM(nn.Module):
         self.norms = nn.ModuleList([nn.GroupNorm(8, c) for c in ch])
 
     def forward(self, pos_ch, z, xy, kpm=None):  # pos_ch:[B,Cpos,N,T], z:[B,d]
+        pos_ch = pos_ch.to(dtype=torch.float32)
+        z      = z.to(torch.float32)
+        xy     = xy.to(torch.float32)
         y = self.in_conv(pos_ch)                          # [B,ch0,N,Tb]
         y = self.film1(self.norms[0](y), z, xy, kpm); y = self.act(y)
         y = self.up1(y)
@@ -199,7 +202,6 @@ class PatchDBVAE(nn.Module):
         self.to_latent = GlobalToLatent(in_dim=d_model, latent_dim=latent_dim)
 
         self.pos_enc = Pos2DChannels(num_bands=num_bands, include_xy=include_xy, base_freq=1.0)
-        # Cpos = 4*num_bands + (2 if include_xy)
         cpos = 4*num_bands + (2 if include_xy else 0)
         self.decoder = CondUNetDecoderFiLM(hp, d_latent=latent_dim, cpos=cpos)
 
@@ -210,9 +212,13 @@ class PatchDBVAE(nn.Module):
         kpm:  [B, N] True=PAD
         """
         # Encoder
-        x_in = x_in.permute(0, 2, 1, 3).contiguous()  # -> [B, C=4, H=N, W=513]
-
-        conv1, conv2, conv3, conv4, bottleneck = self.encoder(x_in)  # bottleneck:[B,512,N,32]
+        x_in = torch.view_as_real(x_in).permute(0,1,4,2,3)
+        B,C,RI,N,F = x_in.shape
+        x_in = x_in.reshape(B,C*RI,N,F).contiguous() #-> [B, C=4, H=N, W=257]
+        # x_in = x_in.permute(0, 2, 1, 3).contiguous()  # -> [B, C=4, H=N, W=513]
+        # hrtf=torch.view_as_real(hrtf)
+        # hrtf = hrtf.reshape(B, F, 1, C * 2)
+        conv1, conv2, conv3, conv4, bottleneck = self.encoder(x_in)  # bottleneck:[B,256,N,32]
 
         # Global latent
         h_global = self.pool(bottleneck, kpm)    # [B,512]

@@ -9,7 +9,12 @@ from scipy import signal
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data._utils.collate import default_collate
-from conf.conf import DTYPE
+from audio_itd import hrir2itd_fft
+DTYPE = torch.complex64
+
+
+
+
 class JoinedDataset(Dataset):
     """
     Combines two datasets sharing the same CSV/row order.
@@ -90,8 +95,18 @@ class PatchDBDataset(Dataset):
 
         hrtf1 = patches[idx1]
         hrtf2 = patches[idx2]
-
-        return {"patches": patches, "pos": pos, "kpm": kpm,'hrtf1':hrtf1,'hrtf2':hrtf2,'az1':az1,'elev1':elev1,'az2':az2,'elev2':elev2}
+        itd = hrir2itd_fft(patches)
+        
+        return {'patches': patches, 
+                'pos': pos, 
+                'kpm': kpm,
+                'hrtf1':hrtf1,
+                'hrtf2':hrtf2,
+                'az1':az1,
+                'elev1':elev1,
+                'az2':az2,
+                'elev2':elev2,
+                'itd':itd}
 
 def load_db(path):
     data = torch.load(path)
@@ -125,13 +140,14 @@ def collate_simple(batch):
 
     dtype_x  = batch[0]["patches"].dtype
     dtype_xy = batch[0]["pos"].dtype
+    dtype_itd = batch[0]["itd"].dtype
     device   = batch[0]["patches"].device  # usually CPU inside DataLoader
 
     # --- allocate padded buffers ---
     patches = torch.zeros(B, Nmax, C, T, dtype=dtype_x, device=device)
     pos     = torch.zeros(B, Nmax, 2,    dtype=dtype_xy, device=device)
     kpm     = torch.ones( B, Nmax,       dtype=torch.bool, device=device)  # True=padded
-
+    itd     = torch.ones( B, Nmax,       dtype=dtype_itd, device=device)  
     # per-sample (complex)
     hrtf1 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
     hrtf2 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
@@ -142,7 +158,7 @@ def collate_simple(batch):
         patches[i, :N] = b["patches"]
         pos[i, :N]     = b["pos"]
         kpm[i, :N]     = False
-
+        itd[i,:N] = b['itd']
         # restore complex HRTFs
         H1 = b["hrtf1"]; H2 = b["hrtf2"]
         C2 = H1.shape[0] // 2
@@ -164,7 +180,8 @@ def collate_simple(batch):
         'az1':b['az1'],
         'az2':b['az2'],
         'elev1':b['elev1'],
-        'elev2':b['elev2']
+        'elev2':b['elev2'],
+        'itd':itd
     }
 
 class ExtractionDatasetRevVAE(Dataset):

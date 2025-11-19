@@ -1,31 +1,10 @@
-from typing import Any, Dict, Tuple
-
+from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torchmetrics.functional.audio import permutation_invariant_training as pit
-from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio as si_sdr
-
 from .NBC2 import NBC2HRTF
 
 
-def neg_si_sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    batch_size = target.shape[0]
-    si_snr_val = si_sdr(preds=preds, target=target)
-    return -torch.mean(si_snr_val.view(batch_size, -1), dim=1)
-
-def pit_sisdr_stft(pred,target,hp):
-    B,C,F,T = target.shape
-    device = pred.device
-    target=target.to(device)
-    window = torch.hann_window(hp.stft.fft_length,device=device)
-    pred = torch.istft(pred.reshape(B * C,F,T), n_fft=hp.stft.fft_length, hop_length=hp.stft.fft_hop, window=window, win_length=hp.stft.fft_length )
-    pred=pred.reshape(B, C, -1)
-    target = torch.istft(target.reshape(B * C,F,T), n_fft=hp.stft.fft_length, hop_length=hp.stft.fft_hop, window=window, win_length=hp.stft.fft_length )
-    target=target.reshape(B, C, -1)
-    neg_sisdr_val = neg_si_sdr(pred,target)
-    loss = neg_sisdr_val.mean()
-    return loss
 
 class NBSS(nn.Module):
     """Multi-channel Narrow-band Deep Speech Separation with Full-band Permutation Invariant Training.
@@ -37,23 +16,31 @@ class NBSS(nn.Module):
 
     def __init__(
             self,
-            n_channel: int = 8,
-            n_speaker: int = 2,
-            n_fft: int = 512,
-            n_overlap: int = 256,
-            ref_channel: int = 0,
-            arch: str = "NB_BLSTM",  # could also be NBC, NBC2
-            arch_kwargs: Dict[str, Any] = dict(),
+            hp      
     ):
         super().__init__()
-        self.arch = NBC2HRTF(dim_input=n_channel * 2, dim_output=n_speaker * 2, **arch_kwargs)     
-
-        self.register_buffer('window', torch.hann_window(n_fft), False)  # self.window, will be moved to self.device at training time
-        self.n_fft = n_fft
-        self.n_overlap = n_overlap
-        self.ref_channel = ref_channel
-        self.n_channel = n_channel
-        self.n_speaker = n_speaker
+        
+        self.hp=hp
+        self.register_buffer('window', torch.hann_window(hp.stft.fft_length), False)  # self.window, will be moved to self.device at training time
+        self.ref_channel = hp.model.ref_channel
+        self.n_channel = hp.model.n_channel
+        self.n_channel_out = hp.model.output_channels
+        arch_kwargs= {  "n_layers": hp.model.n_layers,
+                        "dim_hidden": hp.model.dim_hidden,
+                        "dim_ffn": hp.model.dim_ffn,
+                        "block_kwargs": {
+                            'n_heads': hp.model.block.n_heads,
+                            'dropout': hp.model.block.dropout,
+                            'conv_kernel_size': hp.model.block.conv_kernel_size,
+                            'n_conv_groups': hp.model.block.n_conv_groups,
+                            'norms': tuple(hp.model.block.norms),
+                            'group_batch_norm_kwargs': {
+                                'group_size': hp.model.block.group_batch_norm.group_size,
+                                'share_along_sequence_dim': hp.model.block.group_batch_norm.share_along_sequence_dim,
+                            },
+                        }
+                    }
+        self.arch = NBC2HRTF(dim_input=self.n_channel * 2, dim_output=self.n_channel_out * 2, **arch_kwargs)     
 
     def forward(self, x: Tensor,hrtf: Tensor) -> Tensor:
         """forward
@@ -84,7 +71,7 @@ class NBSS(nn.Module):
         output = self.arch(X,hrtf)
 
         # to complex
-        output = output.reshape(B, F, TF, self.n_speaker, 2)
+        output = output.reshape(B, F, TF, self.n_channel_out, 2)
         output = torch.view_as_complex(output)  # [B, F, TF, S]
         y_hat = output.permute(0,3,1,2)
         return y_hat
@@ -94,36 +81,9 @@ if __name__ == '__main__':
     x = torch.randn(size=(3,2,257,626),dtype=torch.complex64)
     ys = torch.randn(size=(3,2,257,626),dtype=torch.complex64)
     hrtf = torch.randn(size=(3,2,257),dtype=torch.complex64)
-    # NBSS_with_NB_BLSTM = NBSS(n_channel=8, n_speaker=2, arch="NB_BLSTM")
-    # ys_hat = NBSS_with_NB_BLSTM(x)
-    # neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
-    # print(ys_hat.shape, neg_sisdr_loss.mean())
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf.yml')
+    NBSS_with_NBC_small = NBSS(hp)
 
-    # NBSS_with_NBC = NBSS(n_channel=8, n_speaker=2, arch="NBC")
-    # ys_hat = NBSS_with_NBC(x)
-    # neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
-    # print(ys_hat.shape, neg_sisdr_loss.mean())
-
-    NBSS_with_NBC_small = NBSS(n_channel=2,
-                               n_speaker=2,
-                               arch="NBC2",
-                               arch_kwargs={
-                                   "n_layers": 8, # 12 for large
-                                   "dim_hidden": 96, # 192 for large
-                                   "dim_ffn": 192, # 384 for large
-                                   "block_kwargs": {
-                                       'n_heads': 2,
-                                       'dropout': 0,
-                                       'conv_kernel_size': 3,
-                                       'n_conv_groups': 8,
-                                       'norms': ("LN", "GBN", "GBN"),
-                                       'group_batch_norm_kwargs': {
-                                           'group_size': 257, # 129 for 8k Hz
-                                           'share_along_sequence_dim': False,
-                                       },
-                                   }
-                               },)
-    
     Ys_hat = NBSS_with_NBC_small(x,hrtf)
     n_fft = 512
     n_overlap=128

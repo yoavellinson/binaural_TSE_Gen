@@ -5,7 +5,7 @@ import wandb
 from omegaconf import OmegaConf
 from data import JoinedDataset,ExtractionDatasetRevVAE,PatchDBDataset,collate_joined
 from torch.utils.data import random_split, DataLoader
-from NBSS.NBSS import NBSS,pit_sisdr_stft
+from NBSS.NBSS import NBSS
 from losses import SiSDRLossFromSTFT,SpecMAE
 from pathlib import Path
 from tqdm import tqdm
@@ -128,6 +128,7 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
             "val_loss": val_loss,
         })
 
+        
         # Save the model checkpoint
         if epoch == 0 or epoch==epoch_start:
             train_loss_best = train_loss
@@ -137,6 +138,14 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
                 checkpoint_dir_run.mkdir(exist_ok=True)
             except:
                 exit(0)
+
+        if shutdown_event.is_set():
+            print(f"[INFO] - signal seto saving checkpoint")
+            checkpoint_path = f"model_ckpt_slurm_shutdown.pth"
+            save_checkpoint(model,epoch,step,optimizer,checkpoint_dir_run / checkpoint_path)
+            print(f"Model checkpoint saved on slurm shutdown")
+            return
+        
         # checkpoint_path = f"model_epoch_{epoch + 1}.pth"
         if train_loss <= train_loss_best and val_loss <= val_loss_best:
             checkpoint_path = f"model_epoch_best.pth"
@@ -187,7 +196,7 @@ if __name__=="__main__":
     device_idx=0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf.yml')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
 
     ds_db  = PatchDBDataset(hp, train=True,debug=True if DEBUG else False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=True if DEBUG else False)
@@ -213,25 +222,7 @@ if __name__=="__main__":
     )    
 
 
-    model = NBSS(n_channel=2,
-                 n_speaker=2,
-                 arch="NBC2",
-                 arch_kwargs={
-                    "n_layers": 6, # 12 for large
-                    "dim_hidden": 96, # 192 for large
-                    "dim_ffn": 192, # 384 for large
-                    "block_kwargs": {
-                        'n_heads': 2,
-                        'dropout': 0,
-                        'conv_kernel_size': 3,
-                        'n_conv_groups': 8,
-                        'norms': ("LN", "GBN", "GBN"),
-                        'group_batch_norm_kwargs': {
-                            'group_size': 257,
-                            'share_along_sequence_dim': False,
-                        },
-                    }
-                },)
+    model = NBSS(hp)
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
     runs = sorted(Path(hp.training.checkpoint_dir).glob("**/*.pth"), key=os.path.getmtime)
