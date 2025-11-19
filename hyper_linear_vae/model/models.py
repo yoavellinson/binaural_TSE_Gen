@@ -145,40 +145,57 @@ class FreqSrcPosCondAutoEncoder(nn.Module):
     
 
     def get_conditioning_vector_sph(self, pos_sph, freq=None, use_freq=True, use_num_pos=False, device="cuda"):
-        S, B, _ = pos_sph.shape
-        L = freq.shape[0]
-        conditioning_vector = []
+        S, B, _ = pos_sph.shape          # pos_sph: (S, B, 2)
+        L = freq.shape[0]                # L = 257
+        CH = 4                           # 4 channels
 
-        pos_sph = pos_sph / th.tensor(self.radius_norm,device=device)  # (S, B, 2)
-        pos_sph_lr_flip = pos_sph * th.tensor([1, -1], device=device)[None, :]  # (S, B, 2)
-        ########## stoped
-        pos_sph = self.ffm_srcpos(pos_sph)  # (S, B, 32)
-        pos_sph = pos_sph.unsqueeze(2).tile(1, 1, L, 1)  # (S, B, L, 32)
+        # ======= positional encoding =======
+        pos_sph = pos_sph / th.tensor(self.radius_norm, device=device)
 
-        pos_sph_lr_flip = self.ffm_srcpos(pos_sph_lr_flip)  # (S, B, 32)
-        pos_sph_lr_flip = pos_sph_lr_flip.unsqueeze(2).tile(1, 1, L, 1)  # (S, B, L, 32)
+        # Encode
+        pos_encoded = self.ffm_srcpos(pos_sph)       # (S, B, 32)
 
-        pos_sph_all = th.cat((pos_sph, pos_sph_lr_flip, pos_sph[:, :, 0:1, :]), dim=2)  # (S, B, 2L+1, 32)
-        conditioning_vector.append(pos_sph_all)
+        # Expand for each channel
+        pos_encoded = pos_encoded.unsqueeze(2).tile(1, 1, CH*L, 1)  # (S, B, 4L, 32)
 
+        # Add the extra +1 bin to reach 4L+1
+        last = pos_encoded[:, :, :1, :]
+
+        pos_all = th.cat([pos_encoded, last], dim=2)  # (S, B, 4L+1, 32)
+        conditioning_vector = [pos_all]
+
+        # ======= frequency encoding =======
         if use_freq:
             freq = freq / self.freq_norm
-            freq = self.ffm_freq(freq.unsqueeze(-1))  # (1, L, 16)
-            freq = freq.reshape(1, 1, L, -1).tile(S, B, 2, 1)  # (S, B, 2L, 16)
-            freq = th.cat((freq, th.zeros(S, B, 1, freq.shape[-1], device=device, dtype=th.float32)), dim=2)  # (S, B, 2L+1, 16)
-            conditioning_vector.append(freq)
+            freq_enc = self.ffm_freq(freq.unsqueeze(-1))  # (1, L, 16)
 
+            # Repeat freq encoding for 4 channels
+            freq_enc = freq_enc.reshape(1, 1, L, -1).tile(S, B, CH, 1)  # (S, B, 4L, 16)
+
+            # Add the extra +1 element
+            extra = th.zeros(S, B, 1, freq_enc.shape[-1], device=device)
+            freq_enc = th.cat([freq_enc, extra], dim=2)  # (S, B, 4L+1, 16)
+
+            conditioning_vector.append(freq_enc)
+
+        # ======= num_pos =======
         if use_num_pos:
-            num_pos = B / self.num_mes_norm * th.ones(S, B, 2 * L + 1, 1, device=device, dtype=th.float32)  # (S, B, 2L+1, 1)
+            num_pos = B / self.num_mes_norm * th.ones(S, B, CH*L+1, 1, device=device)
             conditioning_vector.append(num_pos)
 
-        delta = th.cat((th.zeros(2 * L, device=device, dtype=th.float32),
-                        th.ones(1, device=device, dtype=th.float32)), dim=0)  # (2L + 1)
-        delta = delta.reshape(1, 1, 2 * L + 1, 1).tile(S, B, 1, 1)  # (S, B, 2L+1, 1)
+        # ======= delta =======
+        delta = th.cat([
+            th.zeros(CH * L, device=device),
+            th.ones(1, device=device)
+        ], dim=0)                          # (4L+1)
+        delta = delta.reshape(1, 1, CH*L+1, 1).tile(S, B, 1, 1)
         conditioning_vector.append(delta)
 
-        conditioning_vector = th.cat(conditioning_vector, dim=-1)  # (S, B, 2L+1, 50 or 49 or 34 or 33)
-        return conditioning_vector.to(device)
+        # ======= final output =======
+        conditioning_vector = th.cat(conditioning_vector, dim=-1)  # (S, B, 4L+1, K)
+
+        return conditioning_vector
+
 
     def forward(self, hrtf, itd, freq, mes_pos_cart, tar_pos_cart, device="cuda"):
         '''
@@ -194,10 +211,7 @@ class FreqSrcPosCondAutoEncoder(nn.Module):
             hrtf_mag_pred: (S, B_t, 4, L)
             itd_pred:      (S, B_t)
         '''
-        S ,C,B_m,L=hrtf.shape
-        hrtf = hrtf.permute(0,2,3,1).unsqueeze(-2)
-        hrtf=th.view_as_real(hrtf)
-        hrtf = hrtf.reshape(S, B_m, L, C * 2).permute(0,1,3,2)
+ 
 
         _, B_m, _, L = hrtf.shape
         assert hrtf.shape[1] == itd.shape[1] == B_m
@@ -206,19 +220,19 @@ class FreqSrcPosCondAutoEncoder(nn.Module):
         hrtf, itd, freq, mes_pos_cart, tar_pos_cart = self.switch_device([hrtf, itd, freq, mes_pos_cart, tar_pos_cart], device=device)
 
 
-        hrtf = th.cat((hrtf[:, :, 0, :], hrtf[:, :, 1, :],hrtf[:, :, 2, :],hrtf[:, :, 3, :]), dim=-1)  # (S, B_m, 2L)
-        encoder_input = th.cat((hrtf, itd[:,:,None]), dim=-1).unsqueeze(-1)  # (S, B_m, 2L+1, 1)
+        hrtf = th.cat((hrtf[:, :, 0, :], hrtf[:, :, 1, :],hrtf[:, :, 2, :],hrtf[:, :, 3, :]), dim=-1)  # (S, B_m, 4L)
+        encoder_input = th.cat((hrtf, itd[:,:,None]), dim=-1).unsqueeze(-1)  # (S, B_m, 4L+1, 1)
         encoder_cond = self.get_conditioning_vector_sph(mes_pos_cart, freq, use_freq=self.encoder_use_freq, use_num_pos=True, device=device)  # (S, B_m, 2L+1, 50 or 34)
 
-        latent = self.encoder((encoder_input, encoder_cond))[0]  # (S, B_m, 2L+1, D)
-        prototype = th.mean(latent, dim=1, keepdim=True)  # (S, 1, 2L+1, D)
+        latent = self.encoder((encoder_input, encoder_cond))[0]  # (S, B_m, 4L+1, D)
+        prototype = th.mean(latent, dim=1, keepdim=True)  # (S, 1, 4L+1, D)
 
         decoder_input = prototype.tile(1, B_t, 1, 1)  # (S, B_t, 2L+1, D)
-        decoder_cond = self.get_conditioning_vector(tar_pos_cart, freq, use_freq=self.decoder_use_freq, use_num_pos=False, device=device)  # (S, B_t, 2L+1, 49 or 33)
+        decoder_cond = self.get_conditioning_vector_sph(tar_pos_cart, freq, use_freq=self.decoder_use_freq, use_num_pos=False, device=device)  # (S, B_t, 2L+1, 49 or 33)
         decoder_output = self.decoder((decoder_input, decoder_cond))[0]  # (S, B_t, 2L+1, 1)
 
-        hrtf_mag_pred = th.cat((decoder_output[:, :, None, :L, 0], decoder_output[:, :, None, L:2 * L, 0]), dim=2)  # (S, B_t, 2, L)
+        hrtf_pred = th.cat((decoder_output[:, :, None, :L, 0], decoder_output[:, :, None, L:2 * L, 0],decoder_output[:, :, None, 2*L:3*L, 0],decoder_output[:, :, None, 3*L:4*L, 0]), dim=2)  # (S, B_t, 4, L)
         itd_pred = decoder_output[:, :, -1, 0]  # (S, B_t)
 
-        return hrtf_mag_pred, itd_pred
+        return hrtf_pred, itd_pred
 

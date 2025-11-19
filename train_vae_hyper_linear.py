@@ -10,16 +10,20 @@ import wandb
 from wandb_key import WANDB_API_KEY
 wandb.login(key=WANDB_API_KEY)
 
+@torch.no_grad()
 def train_step(model, batch, optimizer,hp,device):
-    hrtf, itd, pos = batch["patches"].to(device), batch["itd"].to(device), batch["pos"].to(device)
+    hrtf, itd, pos = batch["patches"], batch["itd"].to(device), batch["pos"].to(device)
+    S ,C,B_m,L=hrtf.shape
+    hrtf = hrtf.permute(0,2,3,1).unsqueeze(-2)
+    hrtf=torch.view_as_real(hrtf)
+    hrtf = hrtf.reshape(S, B_m, L, C * 2).permute(0,1,3,2)
     
     #sample
-    optimizer.zero_grad()
-    freq = torch.arange(1, hp.stft.fft_length//2 + 1) * ((hp.stft.fs//2) / (hp.stft.fft_length//2 + 1))
-
+    # optimizer.zero_grad()
+    freq = torch.arange(0, hp.stft.fft_length//2 + 1) * ((hp.stft.fs//2) / (hp.stft.fft_length//2 + 1))
     hrtf_pred, itd_pred = model(hrtf,itd,freq,pos,pos,device)
     print('')
-    
+    #add losses and train
 
 def main(device=None,debug=False):
 

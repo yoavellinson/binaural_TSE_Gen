@@ -7,15 +7,15 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 
 ########### edit dtypes in modules
 class ResLinearBlock(nn.Module):
-    def __init__(self, channel=64, droprate=0.0, norm=None, bn_c=None):
+    def __init__(self, channel=64, droprate=0.0, norm=None, bn_c=None,dtype=th.float64):
         super().__init__()
         if norm == 'ln':
             self.layers1 = nn.Sequential(
-                nn.Linear(channel, channel),
+                nn.Linear(channel, channel,dtype=th.float64),
                 nn.LayerNorm(channel),
                 nn.Mish(),
                 nn.Dropout(droprate),
-                nn.Linear(channel, channel)
+                nn.Linear(channel, channel,dtype=th.float64)
             )
             self.layers2 = nn.Sequential(
                 nn.LayerNorm(channel),
@@ -24,11 +24,11 @@ class ResLinearBlock(nn.Module):
             )
         elif norm == 'bn':
             self.layers1 = nn.Sequential(
-                nn.Linear(channel, channel),
+                nn.Linear(channel, channel,dtype=th.float64),
                 nn.BatchNorm1d(bn_c),
                 nn.Mish(),
                 nn.Dropout(droprate),
-                nn.Linear(channel, channel)
+                nn.Linear(channel, channel,dtype=th.float64)
             )
             self.layers2 = nn.Sequential(
                 nn.BatchNorm1d(bn_c),
@@ -37,10 +37,10 @@ class ResLinearBlock(nn.Module):
             )
         elif norm is None:
             self.layers1 = nn.Sequential(
-                nn.Linear(channel, channel),
+                nn.Linear(channel, channel,dtype=th.float64),
                 nn.Mish(),
                 nn.Dropout(droprate),
-                nn.Linear(channel, channel)
+                nn.Linear(channel, channel,dtype=th.float64)
             )
             self.layers2 = nn.Sequential(
                 nn.Mish(),
@@ -113,18 +113,18 @@ class HyperLinear(nn.Module):
         weight = weight.reshape([num_batches, self.ch_out, self.ch_in])  # (num_batches, ch_out, ch_in)
         bias = self.bias_layers(z)  # (..., ch_out)
 
-        wx = th.matmul(weight, x.reshape(num_batches, -1, 1)).reshape(batches + [-1])
+        wx = th.matmul(weight, x.to(weight.dtype).reshape(num_batches, -1, 1)).reshape(batches + [-1])
 
         return (wx + bias, z)
 
 
 class HyperLinearBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim=32, num_hidden=1, droprate=0.0, use_res=True, cond_dim=3, post_prcs=True):
+    def __init__(self, in_dim, out_dim, hidden_dim=32, num_hidden=1, droprate=0.0, use_res=True, cond_dim=3, post_prcs=True,dtype=th.float64):
         super().__init__()
         self.hyperlinear = HyperLinear(in_dim, out_dim, ch_hidden=hidden_dim, num_hidden=num_hidden, use_res=use_res, input_size=cond_dim, droprate=droprate)
         if post_prcs:
             self.layers_post = nn.Sequential(
-                nn.LayerNorm(out_dim),
+                nn.LayerNorm(out_dim,dtype=dtype),
                 nn.Mish(),
                 nn.Dropout(droprate)
             )
