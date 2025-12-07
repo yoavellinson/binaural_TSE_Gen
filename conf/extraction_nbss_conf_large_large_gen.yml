@@ -1,6 +1,7 @@
-project: 'binaural_NBSS_headcond'
-checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_head_cond_before'
+project: 'binaural_NBSS_gen'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_gen'
 model:
+  time_dim: 128
   inputchannels: 1
   num_filters: 64
   kernel_size: 4
@@ -8,7 +9,7 @@ model:
   act_fun: relu
   ref_channel: 0
   output_channels: 2
-  n_channel: 2
+  n_channel: 4
   n_layers: 8 # 12 for large
   dim_hidden: 96 # 192 for large
   dim_ffn: 192  # 384 for large
@@ -33,7 +34,7 @@ dataset:
   train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv'
   test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv'
   norm_sample: True
-  time_len: 4
+  time_len: 3
   n_channels: 2
 
 loss:
@@ -43,14 +44,16 @@ loss:
 
 training:
   num_epochs: 1000
-  lr: 1e-3
-  batch_size: 3
+  lr: 3e-4
+  batch_size: 5
   num_samples: 300
   b_m: 200
   num_workers: 4
   weight_decay: 0.05
   seed: 42
 
+sampling:
+  N: 30
 
 vae:
   exp:

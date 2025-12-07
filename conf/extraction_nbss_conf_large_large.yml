@@ -1,5 +1,5 @@
 project: 'binaural_NBSS_headcond'
-checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_head_cond_before'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_large_head_cond'
 model:
   inputchannels: 1
   num_filters: 64
@@ -9,9 +9,9 @@ model:
   ref_channel: 0
   output_channels: 2
   n_channel: 2
-  n_layers: 8 # 12 for large
-  dim_hidden: 96 # 192 for large
-  dim_ffn: 192  # 384 for large
+  n_layers: 12 # 12 for large
+  dim_hidden: 192 # 192 for large
+  dim_ffn: 384  # 384 for large
   block:
     n_heads: 2
     dropout: 0
@@ -44,7 +44,7 @@ loss:
 training:
   num_epochs: 1000
   lr: 1e-3
-  batch_size: 3
+  batch_size: 2
   num_samples: 300
   b_m: 200
   num_workers: 4

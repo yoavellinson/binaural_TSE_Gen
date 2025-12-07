@@ -94,7 +94,23 @@ class PITPESQLoss(nn.Module):
     #         sisdr_loss = sisdr_loss.mean()
     #     return sisdr_loss
 
-    
+class LSD(nn.Module):
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, pred, target, dim=2):
+        lsd = torch.sqrt(torch.mean((pred - target).pow(2), dim=dim))
+        if self.reduction == "mean":
+            lsd = torch.mean(lsd)
+        elif self.reduction == "sum":
+            lsd = torch.sum(lsd)
+        elif self.reduction in ["none", None]:
+            pass
+        else:
+            raise ValueError
+
+        return lsd
 
 def _sisdr_time_safe(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-8, return_db: bool = True):
     """
@@ -130,10 +146,10 @@ class SiSDRLossFromSTFT(nn.Module):
     est_stft, ref_stft: [B, 2, F, T], complex dtype
     Returns scalar loss = -mean(SI-SDR_dB over batch & channels).
     """
-    def __init__(self, hp, center=True, eps=1e-8, reduction='mean'):
+    def __init__(self, hp, center=True, eps=1e-8, reduction='mean',hop=None):
         super().__init__()
         self.n_fft = hp.stft.fft_length
-        self.hop = hp.stft.fft_hop
+        self.hop = hop if hop!=None else hp.stft.fft_hop
         self.win = self.n_fft
         self.center = center
         self.eps = eps
@@ -143,13 +159,26 @@ class SiSDRLossFromSTFT(nn.Module):
         self.register_buffer("_win_buf", torch.tensor([], dtype=torch.float32), persistent=False)
 
     def _get_window(self, device, dtype):
-        if (self._win_buf.numel() == 0) or (self._win_buf.device != device) or (self._win_buf.dtype != dtype):
+        if self.hop == self.n_fft:
+                self._win_buf = torch.ones(self.win,device=device,dtype=dtype)    
+        elif (self._win_buf.numel() == 0) or (self._win_buf.device != device) or (self._win_buf.dtype != dtype):
             self._win_buf = torch.hann_window(self.win, periodic=True, device=device, dtype=dtype)
+        
         return self._win_buf
 
     def forward(self, est_stft: torch.Tensor, ref_stft: torch.Tensor) -> torch.Tensor:
         # Basic checks
-        assert est_stft.dtype.is_complex and ref_stft.dtype.is_complex, "Inputs must be complex STFTs"
+        if not est_stft.dtype.is_complex or not ref_stft.dtype.is_complex:
+            C = est_stft.shape[2]
+            half = C//2
+            est_stft_real = est_stft[:,:,:half,:]
+            est_stft_imag = est_stft[:,:,half:,:]
+            est_stft = torch.complex(est_stft_real,est_stft_imag).permute(0,2,3,1)
+
+            ref_stft_real = ref_stft[:,:,:half,:]
+            ref_stft_imag = ref_stft[:,:,half:,:]
+            ref_stft = torch.complex(ref_stft_real,ref_stft_imag).permute(0,2,3,1)
+
         assert est_stft.shape == ref_stft.shape and est_stft.dim() == 4 and est_stft.size(1) == 2, \
             "Expected shape [B, 2, F, T] for both tensors"
 

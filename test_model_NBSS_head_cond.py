@@ -5,8 +5,8 @@ import torch
 import torchaudio.functional as F
 import numpy as np
 from losses import PESQloss,SiSDRLossFromSTFT
-from data import ExtractionDatasetRevVAE,PatchDBDataset,JoinedDataset,collate_joined
-from NBSS.NBSS import NBSS
+from data import ExtractionDatasetRevVAE,HRTFHeadCondDataset,JoinedDataset,collate_joined_default
+from NBSS.NBSS import NBSSCond
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -43,17 +43,18 @@ def load_checkpoint(model, path, device='cpu'):
 # check the HRTF downsampling
 if __name__ == "__main__":
     one_speaker=False
-    device_idx = 1
+    device_idx = 0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS')
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
-    ds_db  = PatchDBDataset(hp, train=False,debug=True)
+    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_head_cond')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_large.yml')
+    hp.dataset.time_len = 6
+    ds_db  = HRTFHeadCondDataset(hp, train=False,debug=True)
     ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=True)
     joined_ds = JoinedDataset(ds_db, ds_mix)
 
     # db.sir=0
-    test_loader = DataLoader(joined_ds, batch_size=1, shuffle=False,collate_fn=collate_joined)
+    test_loader = DataLoader(joined_ds, batch_size=1, shuffle=False,collate_fn=collate_joined_default)
     
     criterion_sisdr = SiSDRLossFromSTFT(hp)
     criterion_pesq = PESQloss(hp)
@@ -68,9 +69,9 @@ if __name__ == "__main__":
     sisdri=[]
 
     with torch.no_grad():
-        model = NBSS(hp)
+        model = NBSSCond(hp)
         model = model.to(device)
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/sparkling-armadillo-15_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
+        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_large_head_cond/desert-valley-27_NBSSCond_lr_0.001_bs_2_loss_sisdr_L1_rev/model_epoch_best.pth"
         load_checkpoint(model,path=checkpoint_path,device=device)
         model.eval()
         i=0
@@ -79,10 +80,10 @@ if __name__ == "__main__":
             Mix = batch['mix_mix']
             Y1,Y2 = batch['mix_y1'],batch['mix_y2']
             hrtf1,hrtf2 = batch['db_hrtf1'],batch['db_hrtf2']
-            hrtf_patches = batch['db_patches']
-            Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
-        
-            outputs1 = model(Mix,hrtf1)
+            head_cond = batch['db_head_emb']
+            Mix,Y1,Y2,hrtf1,hrtf2,head_cond = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device),head_cond.to(device)
+
+            outputs1 = model(Mix,hrtf1,head_cond)
             az1,elev1,az2,elev2 =batch['db_az1'],batch['db_elev1'],batch['db_az2'],batch['db_elev2']
 
             #sisdr
@@ -108,7 +109,7 @@ if __name__ == "__main__":
             sf.write(out_dir/f'y_hat_1_{step}_az_{int(az1)}_elev_{int(elev1)}_sisdr_{sisdr_1:.3f}.wav',y_hat_1.T,ds_mix.fs)
 
             if not one_speaker:
-                outputs2 = model(Mix,hrtf2)
+                outputs2 = model(Mix,hrtf2,head_cond)
                 sisdr_2 = criterion_sisdr(outputs2,Y2)
                 sisdr_out.append(-sisdr_2.cpu())
                 sisdr_in_2 = criterion_sisdr(Mix,Y2)

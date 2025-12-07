@@ -16,7 +16,7 @@ stft:
   window: hann
 dataset:
   sofas_ppath: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts'
-  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp.csv'
+  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_large.csv' #'/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp.csv'
   test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv'
   norm_sample: True
   time_len: 5

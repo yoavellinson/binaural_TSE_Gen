@@ -197,14 +197,14 @@ class FreqSrcPosCondAutoEncoder(nn.Module):
         return conditioning_vector
 
 
-    def forward(self, hrtf, itd, freq, mes_pos_cart, tar_pos_cart, device="cuda"):
+    def forward(self, hrtf, itd, freq, mes_pos_sph, tar_pos_sph, device="cuda"):
         '''
         Args:
             hrtf:     (S ,B_m, 4, L)
             itd:          (S, B_m)
             freq:         (S, L)
-            mes_pos_cart: (S, B_m, 2) 2: az,elev
-            tar_pos_cart: (S, B_t, 2)
+            mes_pos_sph: (S, B_m, 2) 2: az,elev
+            tar_pos_sph: (S, B_t, 2)
             device: str
 
         Returns:
@@ -215,24 +215,24 @@ class FreqSrcPosCondAutoEncoder(nn.Module):
 
         _, B_m, _, L = hrtf.shape
         assert hrtf.shape[1] == itd.shape[1] == B_m
-        B_t = tar_pos_cart.shape[1]
+        B_t = tar_pos_sph.shape[1]
 
-        hrtf, itd, freq, mes_pos_cart, tar_pos_cart = self.switch_device([hrtf, itd, freq, mes_pos_cart, tar_pos_cart], device=device)
+        hrtf, itd, freq, mes_pos_sph, tar_pos_sph = self.switch_device([hrtf, itd, freq, mes_pos_sph, tar_pos_sph], device=device)
 
 
         hrtf = th.cat((hrtf[:, :, 0, :], hrtf[:, :, 1, :],hrtf[:, :, 2, :],hrtf[:, :, 3, :]), dim=-1)  # (S, B_m, 4L)
         encoder_input = th.cat((hrtf, itd[:,:,None]), dim=-1).unsqueeze(-1)  # (S, B_m, 4L+1, 1)
-        encoder_cond = self.get_conditioning_vector_sph(mes_pos_cart, freq, use_freq=self.encoder_use_freq, use_num_pos=True, device=device)  # (S, B_m, 2L+1, 50 or 34)
+        encoder_cond = self.get_conditioning_vector_sph(mes_pos_sph, freq, use_freq=self.encoder_use_freq, use_num_pos=True, device=device)  # (S, B_m, 2L+1, 50 or 34)
 
         latent = self.encoder((encoder_input, encoder_cond))[0]  # (S, B_m, 4L+1, D)
         prototype = th.mean(latent, dim=1, keepdim=True)  # (S, 1, 4L+1, D)
 
         decoder_input = prototype.tile(1, B_t, 1, 1)  # (S, B_t, 2L+1, D)
-        decoder_cond = self.get_conditioning_vector_sph(tar_pos_cart, freq, use_freq=self.decoder_use_freq, use_num_pos=False, device=device)  # (S, B_t, 2L+1, 49 or 33)
-        decoder_output = self.decoder((decoder_input, decoder_cond))[0]  # (S, B_t, 2L+1, 1)
+        decoder_cond = self.get_conditioning_vector_sph(tar_pos_sph, freq, use_freq=self.decoder_use_freq, use_num_pos=False, device=device)  # (S, B_t, 2L+1, 49 or 33)
+        decoder_output = self.decoder((decoder_input, decoder_cond))[0]  # (S, B_t, 4L+1, 1)
 
         hrtf_pred = th.cat((decoder_output[:, :, None, :L, 0], decoder_output[:, :, None, L:2 * L, 0],decoder_output[:, :, None, 2*L:3*L, 0],decoder_output[:, :, None, 3*L:4*L, 0]), dim=2)  # (S, B_t, 4, L)
         itd_pred = decoder_output[:, :, -1, 0]  # (S, B_t)
 
-        return hrtf_pred, itd_pred
+        return hrtf_pred, itd_pred,prototype
 
