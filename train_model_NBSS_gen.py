@@ -9,9 +9,10 @@ from NBSS.NBSS import NBSS,NBSS_CFM
 from losses import SiSDRLossFromSTFT,SpecMAE
 from pathlib import Path
 from tqdm import tqdm
+from torch.optim.lr_scheduler import LambdaLR
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import os, signal, threading 
-
+from test_model_NBSS_gen import sample_flow
 
 from tqdm import tqdm
 from pathlib import Path
@@ -21,7 +22,49 @@ import wandb
 wandb.login(key=WANDB_API_KEY)
 DEBUG=False
 
-def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, val_loader, num_epochs, device, learning_rate=0.0001, project_name="binaural_complex_extraction_many_heads"):
+
+def get_scheduler(optimizer, total_steps: int, warmup_steps: int, lr_min_ratio: float = 0.01):
+    """
+    Creates a learning rate scheduler with a linear warmup followed by 
+    cosine annealing decay.
+
+    Args:
+        optimizer (torch.optim.Optimizer): The optimizer being used (e.g., AdamW).
+        total_steps (int): Total number of training steps (iterations).
+        warmup_steps (int): Number of steps for the linear warmup phase.
+        lr_min_ratio (float): The final LR will be (initial_LR * lr_min_ratio).
+    
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: The combined scheduler.
+    """
+    
+    # --- 1. Warmup Function (Linear Increase) ---
+    def warmup_func(step):
+        if step < warmup_steps:
+            # Linear increase from 0 to 1
+            return float(step) / float(max(1, warmup_steps))
+        
+        # --- 2. Cosine Decay Function ---
+        # After warmup, the effective step starts from 0 for the remaining steps.
+        cosine_steps = total_steps - warmup_steps
+        current_cosine_step = step - warmup_steps
+        
+        # Cosine Annealing (from 1 down to lr_min_ratio)
+        if current_cosine_step < cosine_steps:
+            # Cosine factor goes from 1.0 down to 0.0
+            cosine_factor = 0.5 * (1. + torch.cos(
+                torch.tensor(current_cosine_step / cosine_steps) * torch.pi
+            ))
+            # Scale the factor to land at lr_min_ratio instead of 0
+            return lr_min_ratio + (1.0 - lr_min_ratio) * cosine_factor
+        
+        # If training extends beyond total_steps, LR stays at the minimum
+        return lr_min_ratio 
+
+    return LambdaLR(optimizer, lr_lambda=warmup_func)
+
+
+def train_with_wandb(model,optimizer,scheduler,epoch_start,step_start, hp, train_loader, val_loader, num_epochs, device, learning_rate=0.0001, project_name="binaural_complex_extraction_many_heads"):
     """
     Trains a PyTorch model on multiple GPUs and logs metrics to Weights & Biases (wandb).
 
@@ -46,13 +89,12 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
         })
     else:
         wandb.init(mode='offline')
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
     # Send model to device
     device = torch.device(device)
     model = model.to(device)
 
     criterion_sisdr = SiSDRLossFromSTFT(hp) #pit_sisdr_stft
-    criterion_mae = SpecMAE(hp)
     val_loss = 90000
 
     for epoch in tqdm(range(epoch_start,num_epochs), desc="Epochs"):
@@ -92,18 +134,18 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
 
             loss.backward()
             optimizer.step()
-
+            scheduler.step()
             
             # Metrics
             train_loss += loss.item() * Mix.size(0)
             global_step = step_start + step + 1 + epoch * len(train_loader)
 
-            wandb.log({"step_loss": loss.item(), "step": global_step})
+            wandb.log({"step_loss": loss.item(), "step": global_step,'current_lr':scheduler.get_last_lr()[0]})
             step_bar.set_postfix({"Train Loss": loss.item()})
         train_loss /= len(train_loader.dataset)
 
         # Validation loop
-        if epoch%10==0:
+        if epoch%10==0 or not DEBUG:
             model.eval()
             val_loss = 0.0
         
@@ -115,31 +157,10 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
                     Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
                     # Mix: [B, C, F, T]
                     Mix_big = torch.cat([Mix, Mix], dim=0)     # [2B, C, F, T]
-
-                    # Targets: Y1, Y2: [B, Cout, F, T]
                     S_ref_big = torch.cat([Y1, Y2], dim=0)     # [2B, Cout, F, T]
-
-                    # HRTF: hrtf1, hrtf2: [B, C, F]
                     H_big = torch.cat([hrtf1, hrtf2], dim=0)   # [2B, C, F]
 
-                    B = Mix.shape[0]
-                    N = hp.sampling.N   # number of ODE steps
-
-                    s = torch.randn_like(S_ref_big)    # [2B, Cout, F, T]
-                    t_vals = torch.linspace(0, 1, N, device=device)
-
-                    for k in tqdm(range(N - 1)):
-                        t = t_vals[k].expand(2 * B)
-                        dt = float(t_vals[k+1] - t_vals[k])
-
-                        v1 = model(Mix_big, H_big, s, t)
-                        s_pred = s + dt * v1
-
-                        t_next = t_vals[k+1].expand(2 * B)
-                        v2 = model(Mix_big, H_big, s_pred, t_next)
-
-                        s = s + dt * 0.5 * (v1 + v2)
-                    s_gen = s
+                    s_gen =  sample_flow(model, Mix_big, H_big)
                     val_loss_i = criterion_sisdr(s_gen, S_ref_big)*hp.loss.sisdr_coeff
                     val_loss += val_loss_i.item() * Mix.size(0)
 
@@ -166,7 +187,7 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
         if shutdown_event.is_set():
             print(f"[INFO] - signal seto saving checkpoint")
             checkpoint_path = f"model_ckpt_slurm_shutdown.pth"
-            save_checkpoint(model,epoch,step,optimizer,checkpoint_dir_run / checkpoint_path)
+            save_checkpoint(model,epoch,step,optimizer,scheduler,checkpoint_dir_run / checkpoint_path)
             print(f"Model checkpoint saved on slurm shutdown")
             return
         
@@ -175,11 +196,11 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
             checkpoint_path = f"model_epoch_best.pth"
             train_loss_best = train_loss
             val_loss_best = val_loss
-            save_checkpoint(model,epoch,step,optimizer,checkpoint_dir_run / checkpoint_path)
+            save_checkpoint(model,epoch,step,optimizer,scheduler,checkpoint_dir_run / checkpoint_path)
             print(f'Model saved: Epoch-{epoch+1} Train loss:{train_loss_best} Val loss:{val_loss_best}')
         else:
             checkpoint_path = f"model_last_epoch.pth"
-            save_checkpoint(model,epoch,step,optimizer,checkpoint_dir_run / checkpoint_path)
+            save_checkpoint(model,epoch,step,optimizer,scheduler,checkpoint_dir_run / checkpoint_path)
 
 
         # Print metrics
@@ -187,17 +208,18 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
 
     wandb.finish()
 
-def save_checkpoint(model,epoch,step,optimizer,path):
+def save_checkpoint(model,epoch,step,optimizer,scheduler,path): # <--- ADD scheduler here
     checkpoint = {
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(), # <--- CRITICAL ADDITION
         'step':step
      }
     torch.save(checkpoint, path)
     print(f"Model checkpoint saved at epoch {epoch + 1}")
 
-def load_checkpoint(model, optimizer, path, device='cpu'):
+def load_checkpoint(model, optimizer, scheduler, path, device='cpu'): # <--- ADD scheduler here
     if not os.path.isfile(path):
         print(f"No checkpoint found at {path}")
         return 0, 0  # start fresh
@@ -205,6 +227,7 @@ def load_checkpoint(model, optimizer, path, device='cpu'):
     checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict']) # <--- CRITICAL ADDITION
 
     start_epoch = checkpoint.get('epoch', 0)
     step = checkpoint.get('step', 0)
@@ -249,6 +272,14 @@ if __name__=="__main__":
     model = NBSS_CFM(hp)
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
+
+    scheduler = get_scheduler(
+    optimizer, 
+    total_steps=len(train_loader)*hp.training.num_epochs, 
+    warmup_steps=10000, 
+    lr_min_ratio=0.05
+    )
+    
     runs = sorted(Path(hp.checkpoint_path).glob("**/*.pth"), key=os.path.getmtime)
     resume=False
     if runs:
@@ -257,7 +288,7 @@ if __name__=="__main__":
     if resume:
         print(f"[INFO] Resuming from checkpoint: {latest_checkpoint_pth}")
         # checkpoint = torch.load(latest_checkpoint_pth,map_location=device,weights_only=False)
-        epoch,step = load_checkpoint(model,optimizer,latest_checkpoint_pth,device)
+        epoch,step = load_checkpoint(model,optimizer,scheduler,latest_checkpoint_pth,device)
     else:
         print("[INFO] Starting fresh training run.")    
         latest_checkpoint_pth=''
@@ -266,5 +297,6 @@ if __name__=="__main__":
 
     for sig in (signal.SIGUSR1, signal.SIGTERM):
         signal.signal(sig, handle_sig)
-        
-    train_with_wandb(model,optimizer,epoch,step,hp,train_loader,val_loader,learning_rate=hp.training.lr,num_epochs=hp.training.num_epochs,device=device,project_name=hp.project)
+    
+
+    train_with_wandb(model,optimizer,scheduler,epoch,step,hp,train_loader,val_loader,learning_rate=hp.training.lr,num_epochs=hp.training.num_epochs,device=device,project_name=hp.project)

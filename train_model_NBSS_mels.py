@@ -11,13 +11,12 @@ from pathlib import Path
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import os, signal, threading 
-
-
 from tqdm import tqdm
 from pathlib import Path
 
 from wandb_key import WANDB_API_KEY
 import wandb
+
 wandb.login(key=WANDB_API_KEY)
 DEBUG=False
 
@@ -193,11 +192,12 @@ def handle_sig(signum, frame):
     shutdown_event.set()
 
 if __name__=="__main__":
-    device_idx=0
+    device_idx=1
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
-
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_mel.yml')
+    # if DEBUG:
+    #     hp.training.batch_size=2
     ds_db  = PatchDBDataset(hp, train=True,debug=True if DEBUG else False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=True if DEBUG else False)
 

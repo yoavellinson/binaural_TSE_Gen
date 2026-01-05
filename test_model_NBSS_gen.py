@@ -35,40 +35,33 @@ def get_best_sisdr(crit,y_hat,y,max_shift=0.1):
     return best_sisdr
 
 
-def sample_flow(model, Mix, H, N_steps=15):
+def sample_flow(model, Mix, H, N_steps=64, device='cuda'):
     """
-    Mix:    [B, C, F, T]    mixture STFT
-    H:      [B, C, F]       HRTF patch
+    Generates the extracted speech (x_1) using the Euler method.
+
+    Args:
+        model (nn.Module): The trained Flow Matching model (u_theta).
+        Mix (torch.Tensor): The 2-channel mixture signal (y).
+        H (torch.Tensor): The spatial clue/HRTF (s).
+        N_steps (int): Number of integration steps (NFEs).
+        device (str): Device to perform computations on ('cuda' or 'cpu').
+
     Returns:
-        s_gen: [B, 1, F, T]   generated clean STFT of target speaker
+        torch.Tensor: The generated 2-channel extracted speech signal (x_1).
     """
+    
     model.eval()
-    B = Mix.size(0)
-    device = Mix.device
-
-    s = torch.rand_like(Mix)
-
-    # ---- 2. Create time grid ----
-    t_vals = torch.linspace(0, 1, N_steps, device=device)
-
-    # ---- 3. Heun ODE solver ----
-    for k in tqdm(range(N_steps - 1)):
-        t = t_vals[k].expand(B)
-        dt = float(t_vals[k+1] - t_vals[k])
-
-        # v1 at time t
-        v1 = model(Mix, H, s, t)
-        s_pred = s + dt * v1
-
-        # v2 at t+dt
-        t_next = t_vals[k+1].expand(B)
-        v2 = model(Mix, H, s_pred, t_next)
-
-        # Heun update
-        s = s + dt * 0.5 * (v1 + v2)
-
-    return s
-
+    
+    B = Mix.shape[0]
+    dt = 1.0 / N_steps 
+    x_t = torch.randn_like(Mix, device=device) 
+    with torch.no_grad():
+        for i in tqdm(range(N_steps)):
+            t_i = i * dt 
+            t_batch = torch.full((B,), t_i, device=device) 
+            v_pred = model(Mix, H, x_t, t_batch)
+            x_t = x_t + v_pred * dt
+    return x_t
 
 def load_checkpoint(model, path, device='cpu'):
     checkpoint = torch.load(path, map_location=device)
@@ -101,7 +94,7 @@ if __name__ == "__main__":
     dnsmos_sig = []
     dnsmos_bak = []
     sisdri=[]
-    checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_gen/cool-shadow-5_NBSS_CFM_lr_0.0003_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
+    checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_gen/eternal-forest-9_NBSS_CFM_lr_0.0003_bs_1_loss_sisdr_L1_rev/model_epoch_best.pth"
 
     with torch.no_grad():
         model = NBSS_CFM(hp).to(device)

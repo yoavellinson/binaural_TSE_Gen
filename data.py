@@ -9,10 +9,12 @@ from scipy import signal
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data._utils.collate import default_collate
+import sys
+sys.path.append("/home/workspace/yoavellinson/binaural_TSE_Gen")
 from audio_itd import hrir2itd_fft
 DTYPE = torch.complex64
 from pathlib import Path
-
+DEBUG_SAMPLES=100
 
 
 class JoinedDataset(Dataset):
@@ -80,7 +82,7 @@ class PatchDBDataset(Dataset):
         df = hp.dataset.train_csv_path if train else hp.dataset.test_csv_path
         self.df = pd.read_csv(df)
         if debug:
-            self.df = self.df[:30]
+            self.df = self.df[:DEBUG_SAMPLES]
         self.hp = hp
     def __len__(self):
         return len(self.df)  # <- fix: was len(self.paths)
@@ -112,8 +114,6 @@ class PatchDBDataset(Dataset):
         dist2 = torch.norm(pos - target2, dim=1)  # Euclidean distance
         idx2 = torch.argmin(dist2).item()
         
-
-
         hrtf1 = patches[idx1]
         hrtf2 = patches[idx2]
         itd = hrir2itd_fft(patches)
@@ -136,7 +136,7 @@ class HRTFHeadCondDataset(Dataset):
         df = hp.dataset.train_csv_path if train else hp.dataset.test_csv_path
         self.df = pd.read_csv(df)
         if debug:
-            self.df = self.df[:30]
+            self.df = self.df[:DEBUG_SAMPLES]
         self.hp = hp
         self.device=device
     def __len__(self):
@@ -348,7 +348,7 @@ class ExtractionDatasetRevVAE(Dataset):
         self.hp = hp
         self.df = pd.read_csv(self.hp.dataset.train_csv_path) if train else pd.read_csv(self.hp.dataset.test_csv_path) 
         if debug:
-            self.df = self.df[:30]
+            self.df = self.df[:DEBUG_SAMPLES]
         self.fs = self.hp.stft.fs
         self.azs = {}
         tmp_az = 90
@@ -460,13 +460,133 @@ class ExtractionDatasetRevVAE(Dataset):
         return Mix,Y1,Y2
     
 
+import torch
+
+def find_matching_positions(d):
+    # First, normalize shapes: remove batch dimension [1, N, 2] -> [N, 2]
+    d2 = {k: v.squeeze(0) for k, v in d.items()}  
+    
+    # Convert each pos tensor to a set of tuples for fast equality checks
+    tuple_map = {
+        k: {tuple(pair.tolist()) for pair in v}
+        for k, v in d2.items()
+    }
+
+    # Build result  
+    d_res = {}
+
+    for name_i, pos_i in d2.items():
+        matches = {}
+
+        for name_j, pos_j in d2.items():
+            if name_i == name_j:
+                continue
+
+            # find exact matches
+            pairs_j = pos_j.tolist()  # list of [az,el]
+            idx_list = [
+                idx for idx, pair in enumerate(pairs_j)
+                if tuple(pair) in tuple_map[name_i]
+            ]
+
+            if idx_list:  # only save if there are matches
+                mask = (abs(d[name_j][:,idx_list,-1])<30).tolist()[0]
+                idx_filtered = [x for x, m in zip(idx_list, mask) if m]
+                matches[name_j] = idx_filtered 
+
+        d_res[name_i] = matches
+
+    for name in list(d_res.keys()):
+        for sub in list(d_res[name].keys()):
+            if len(d_res[name][sub]) == 0:      # empty list
+                d_res[name].pop(sub)            # remove it
+
+        # Optionally remove empty sub-dicts
+        if len(d_res[name]) == 0:
+            d_res.pop(name)
+
+    return d_res
+def create_similar():
+    new_df = []
+    for i in tqdm(df.index):
+        line = df.iloc[i].copy()
+        p = Path(line['pt_path'])
+        name=f'db_{p.parent.stem}_sample_{p.stem}'
+        get_new_name = True
+        m = 0
+        while get_new_name==True and m<10:
+            try:
+                new_name = random.choice(list(d_res[name].keys()))
+            except:
+                m+=1
+                continue
+
+            if d_res[name][new_name] == []:
+                d_res[name].pop(new_name)
+                m+=1
+                continue
+            new_idx1 = random.choice(d_res[name][new_name])
+            new_pos1 = d[new_name][:,new_idx1]
+            new_idx2 =None
+            s = random.sample(d_res[name][new_name],len(d_res[name][new_name]))
+            for j in s:
+                if abs(d[new_name][:,j] - new_pos1)[:,0] >= 30:
+                    new_idx2 = j
+                    break
+            if new_idx2:
+                new_pos2 = d[new_name][:,new_idx2]
+                # d_res[name][new_name].remove(new_idx1)
+                # d_res[name][new_name].remove(new_idx2)
+                line['az_1'] = float(new_pos1[0][0])
+                line['elev_1'] = float(new_pos1[0][1])
+                line['az_2'] = float(new_pos2[0][0])
+                line['elev_2'] = float(new_pos2[0][1])
+                db = new_name.split('_sample_')[0].replace('db_','')
+                sample = new_name.split('_sample_')[-1]
+                pt_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/pts_512/test_set/{db}/{sample}.pt'
+                sofa_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/test_set/{db}/{sample}.sofa'
+                line.sofa_path = sofa_path
+                line.pt_path = pt_path
+                new_df.append(line)
+                get_new_name = False
+                if d_res[name] == {} or len(d_res[name].keys())<2:
+                    d_res.pop(name)
+            else:
+                m+=1
+    new_df = pd.DataFrame(new_df) 
+    new_df.to_csv('/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_different_heads_wsj0_1k_mp.csv')
+    torch.save(d_res, "positions_match.pt")
+    
+
+def find_names_with_pairs(d, az1, elev1, az2, elev2):
+    target1 = (float(az1), float(elev1))
+    target2 = (float(az2), float(elev2))
+
+    matched_names = []
+
+    for name, pos in d.items():
+        p = pos.squeeze(0).tolist()   # convert [1,N,2] → list of (az,el)
+
+        has_az1 = abs(pos[:, :, 0] -az1)<1 
+        has_elev1 = abs(pos[:, :, 1] -elev1)<1
+        has_az2 = abs(pos[:, :, 0] -az2)<1 
+        has_elev2 = abs(pos[:, :, 1] -elev2)<1
+
+        has1= has_az1*has_elev1
+        has2= has_az2*has_elev2
+
+        if has1.sum() and has2.sum():
+            matched_names.append(name)
+
+    return matched_names
 
 if __name__ == "__main__":
     from tqdm import tqdm
-    
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/vae.yml')
-    ds_db  = PatchDBDataset(hp, train=True)
-    ds_mix = ExtractionDatasetRevVAE(hp, train=True)
+    import random
+
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_large.yml')
+    ds_db  = PatchDBDataset(hp, train=False)
+    ds_mix = ExtractionDatasetRevVAE(hp, train=False)
 
     joined_ds = JoinedDataset(ds_db, ds_mix)
     loader = DataLoader(
@@ -475,18 +595,39 @@ if __name__ == "__main__":
         num_workers=1,
         collate_fn=collate_joined
     )
+    d = {}
     for step,batch in tqdm(enumerate(loader),total=len(loader)):
-        print(batch.keys())   
-        
-        Mix = batch['mix_mix']
-        S1,S2 = batch['mix_y1'],batch['mix_y2']
-        mix = ds_mix.iSTFT(Mix)
-        s1,s2 = ds_mix.iSTFT(S1),ds_mix.iSTFT(S2)
+        name = batch['db_name']
+        if not name in list(d.keys()):
+            pos = batch['db_pos']
+            d[name[0]] = pos
+        if len(d.keys())==7:
+            break
+    df = ds_db.df
+    new_df = []
+    for i in tqdm(df.index):
+        line = df.iloc[i].copy()
+        p = Path(line['pt_path'])
+        name=f'db_{p.parent.stem}_sample_{p.stem}'
+        az1,elev1 = line['az_1'],line['elev_1']
+        az2,elev2 = line['az_2'],line['elev_2']
+        d_tmp = d.copy()
+        d_tmp.pop(name)
+        names = find_names_with_pairs(d_tmp,az1,elev1,az2,elev2)
+        if names == []:
+            continue
+        else: 
+            new_name = random.sample(names,1)[0]
 
-        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/mix_{step}.wav',mix.T,16000)
-        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s1_{step}.wav',s1.T,16000)
-        sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s2_{step}.wav',s2.T,16000)
-        break
-        #### check the create data script for the rounding of az an elev so it matches in collate fn
-
+            # new_name = random.choice(list(d_res[name].keys()))
     
+            db = new_name.split('_sample_')[0].replace('db_','')
+            sample = new_name.split('_sample_')[-1]
+            pt_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/pts_512/test_set/{db}/{sample}.pt'
+            sofa_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/test_set/{db}/{sample}.sofa'
+            line.sofa_path = sofa_path
+            line.pt_path = pt_path
+            new_df.append(line)
+    new_df = pd.DataFrame(new_df) 
+    new_df.to_csv('/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_different_heads_wsj0_1k_mp.csv')
+

@@ -1,5 +1,5 @@
-project: 'binaural_NBSS'
-checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large'
+project: 'binaural_NBSS_multi_to_narrow_band'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_mel2'
 model:
   inputchannels: 1
   num_filters: 64
@@ -9,9 +9,11 @@ model:
   ref_channel: 0
   output_channels: 2
   n_channel: 2
-  n_layers: 8 # 12 for large
+  n_layers_mels: 4 # 12 for large
+  n_layers_shared: 4
   dim_hidden: 96 # 192 for large
   dim_ffn: 192  # 384 for large
+  num_bins: 6
   block:
     n_heads: 2
     dropout: 0
@@ -33,7 +35,7 @@ dataset:
   train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp_clean.csv'
   test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv'
   norm_sample: True
-  time_len: 5
+  time_len: 3
   n_channels: 2
 
 loss:
@@ -50,41 +52,3 @@ training:
   num_workers: 4
   weight_decay: 0.05
   seed: 42
-
-
-vae:
-  exp:
-    seed: 0
-  training:
-    checkpoint_path: null
-    epochs: 1400
-    save_interval: 200
-    lr: 0.001
-    lr_gamma: 0.1
-    lr_milestones: [800, 1200]
-    loss_weight:
-      lsd: 1.0
-      ae_itd: 2500.0
-    num_mes_pos_train: ["all", 256, 169, 100, 49, 16, 9, 6, 4]
-    num_mes_pos_valid: ["all"]
-
-  architecture:
-    encoder:
-      num_layers: 2
-      mid_dim: 16
-      out_dim: 64
-    decoder:
-      num_layers: 2
-      in_dim: 64  # == encoder.out_dim
-      mid_dim: 16
-    weight_bias_generator:
-      num_layers: 2
-      mid_dim: 64
-    fourier_feature_mapping:
-      num_features:
-        source_position: 16
-        frequency: 8
-      trainable: true
-    freq_norm: 16000.0
-    radius_norm: [360,90]
-    num_mes_norm: 865.0

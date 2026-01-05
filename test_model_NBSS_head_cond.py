@@ -46,7 +46,7 @@ if __name__ == "__main__":
     device_idx = 0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_head_cond')
+    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_head_cond_different_heads')
     hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_large.yml')
     hp.dataset.time_len = 6
     ds_db  = HRTFHeadCondDataset(hp, train=False,debug=True)

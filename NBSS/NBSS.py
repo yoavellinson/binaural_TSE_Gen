@@ -2,7 +2,7 @@ from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 from torch import Tensor
-from .NBC2 import NBC2HRTF,NBC2HRTFCond,NBC2HRTF_temb
+from .NBC2 import NBC2HRTF,NBC2HRTFCond,NBC2HRTF_temb,mNBC2HRTF2
 import math
 
 
@@ -26,20 +26,37 @@ class NBSS(nn.Module):
         self.n_channel = hp.model.n_channel
         self.n_channel_out = hp.model.output_channels
         arch_kwargs= {  "n_layers": hp.model.n_layers,
-                        "dim_hidden": hp.model.dim_hidden,
-                        "dim_ffn": hp.model.dim_ffn,
-                        "block_kwargs": {
-                            'n_heads': hp.model.block.n_heads,
-                            'dropout': hp.model.block.dropout,
-                            'conv_kernel_size': hp.model.block.conv_kernel_size,
-                            'n_conv_groups': hp.model.block.n_conv_groups,
-                            'norms': tuple(hp.model.block.norms),
-                            'group_batch_norm_kwargs': {
-                                'group_size': hp.model.block.group_batch_norm.group_size,
-                                'share_along_sequence_dim': hp.model.block.group_batch_norm.share_along_sequence_dim,
-                            },
-                        }
-                    }
+                "dim_hidden": hp.model.dim_hidden,
+                "dim_ffn": hp.model.dim_ffn,
+                "block_kwargs": {
+                    'n_heads': hp.model.block.n_heads,
+                    'dropout': hp.model.block.dropout,
+                    'conv_kernel_size': hp.model.block.conv_kernel_size,
+                    'n_conv_groups': hp.model.block.n_conv_groups,
+                    'norms': tuple(hp.model.block.norms),
+                    'group_batch_norm_kwargs': {
+                        'group_size': hp.model.block.group_batch_norm.group_size,
+                        'share_along_sequence_dim': hp.model.block.group_batch_norm.share_along_sequence_dim,
+                    },
+                }
+            }
+        # arch_kwargs= {  "n_layers_mels": hp.model.n_layers_mels,
+        #                 "n_layers": hp.model.n_layers_shared,
+        #                 "dim_hidden": hp.model.dim_hidden,
+        #                 "dim_ffn": hp.model.dim_ffn,
+        #                 "block_kwargs": {
+        #                     'n_heads': hp.model.block.n_heads,
+        #                     'dropout': hp.model.block.dropout,
+        #                     'conv_kernel_size': hp.model.block.conv_kernel_size,
+        #                     'n_conv_groups': hp.model.block.n_conv_groups,
+        #                     'norms': tuple(hp.model.block.norms),
+        #                     'group_batch_norm_kwargs': {
+        #                         'group_size': hp.model.block.group_batch_norm.group_size,
+        #                         'share_along_sequence_dim': hp.model.block.group_batch_norm.share_along_sequence_dim,
+        #                     },
+        #                 }
+        #             }
+        # self.arch = mNBC2HRTF2(dim_input=self.n_channel * 2, dim_output=self.n_channel_out * 2, num_bins= hp.model.num_bins,**arch_kwargs)     
         self.arch = NBC2HRTF(dim_input=self.n_channel * 2, dim_output=self.n_channel_out * 2, **arch_kwargs)     
 
     def forward(self, x: Tensor,hrtf: Tensor) -> Tensor:

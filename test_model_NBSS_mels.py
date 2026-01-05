@@ -43,13 +43,13 @@ def load_checkpoint(model, path, device='cpu'):
 # check the HRTF downsampling
 if __name__ == "__main__":
     one_speaker=False
-    device_idx = 0
+    device_idx = 1
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_different_heads')
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
-    ds_db  = PatchDBDataset(hp, train=False,debug=False)
-    ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=False)
+    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_mels2')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_mel.yml')
+    ds_db  = PatchDBDataset(hp, train=False,debug=True)
+    ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=True)
     joined_ds = JoinedDataset(ds_db, ds_mix)
 
     # db.sir=0
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         model = NBSS(hp)
         model = model.to(device)
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/sparkling-armadillo-15_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
+        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_mel2/None_NBSS_lr_0.001_bs_2_loss_sisdr_L1_rev/model_epoch_best.pth"
         load_checkpoint(model,path=checkpoint_path,device=device)
         model.eval()
         i=0
