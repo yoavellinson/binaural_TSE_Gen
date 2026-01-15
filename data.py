@@ -17,24 +17,32 @@ class JoinedDataset(Dataset):
     Left side (db_) is dict from PatchDBDataset.
     Right side (mix_) is tuple (Mix, Y1, Y2) from ExtractionDatasetRevVAE, converted to dict.
     """
-    def __init__(self, ds_db: Dataset, ds_mix: Dataset, prefix_db='db_', prefix_mix='mix_'):
+    def __init__(self, ds_db: Dataset, ds_mix: Dataset, prefix_db='db_', prefix_mix='mix_',device=None):
         assert len(ds_db) == len(ds_mix), "Datasets must have equal length for index-wise join"
         self.ds_db = ds_db
         self.ds_mix = ds_mix
         self.prefix_db = prefix_db
         self.prefix_mix = prefix_mix
+        self.device = device
 
     def __len__(self):
         return len(self.ds_db)
 
     def __getitem__(self, i):
-        A = self.ds_db[i]                       # dict: patches/pos/kpm
-        B = self.ds_mix[i]                      # tuple: (Mix, Y1, Y2) or dict
+        try:
+            A = self.ds_db[i]                       # dict: patches/pos/kpm
+            B = self.ds_mix[i]                      # tuple: (Mix, Y1, Y2) or dict
+        except:
+            print(i)            
         if not isinstance(B, dict):
             Mix, Y1, Y2 = B
             B = {"mix": Mix, "y1": Y1, "y2": Y2}
-        A = {self.prefix_db + k: v for k, v in A.items()}
-        B = {self.prefix_mix + k: v for k, v in B.items()}
+        
+        A = {
+            self.prefix_db + k: (v.to(self.device) if torch.is_tensor(v) else v)
+            for k, v in A.items()
+        }
+        B = {self.prefix_mix + k: v.to(self.device) for k, v in B.items()}
         return {**A, **B}
 
 def collate_joined(batch):
@@ -50,12 +58,25 @@ def collate_joined(batch):
     out.update({f"mix_{k}": v for k, v in mix_part.items()})
     return out
 
+def collate_joined_default(batch):
+    # Split into db_ and mix_ sub-dicts
+    db_batch  = [{k[3:]: v for k, v in b.items() if k.startswith("db_")}  for b in batch]
+    mix_batch = [{k[4:]: v for k, v in b.items() if k.startswith("mix_")} for b in batch]
+
+    db_part  = default_collate(db_batch)                             # padded [B, Nmax, C, T], etc.
+    mix_part = default_collate(mix_batch)                           # handles complex tensors too
+    
+    # Re-namespace keys for clarity
+    out = {f"db_{k}": v for k, v in db_part.items()}
+    out.update({f"mix_{k}": v for k, v in mix_part.items()})
+    return out
+
 class PatchDBDataset(Dataset):
     def __init__(self, hp, train=True,debug=False):
         df = hp.dataset.train_csv_path if train else hp.dataset.test_csv_path
         self.df = pd.read_csv(df)
         if debug:
-            self.df = self.df[:30]
+            self.df = self.df[:DEBUG_SAMPLES]
         self.hp = hp
     def __len__(self):
         return len(self.df)  # <- fix: was len(self.paths)
@@ -65,9 +86,9 @@ class PatchDBDataset(Dataset):
         if self.hp.stft.fft_length == 512:
             p =line['sofa_path']
             p = p.replace('sofas','pts_512').replace('.sofa','.pt')
-            d = load_db(p)
+            d,name = load_db(p)
         else:
-            d = load_db(line['pt_path'])
+            d,name = load_db(line['pt_path'])
         patches = d['patches']    # expect [N, C, T]
         pos     = d['pos']        # [N, 2]
         N, C, T = patches.shape 
@@ -87,18 +108,84 @@ class PatchDBDataset(Dataset):
         dist2 = torch.norm(pos - target2, dim=1)  # Euclidean distance
         idx2 = torch.argmin(dist2).item()
         
-
-
         hrtf1 = patches[idx1]
         hrtf2 = patches[idx2]
+        itd = hrir2itd_fft(patches)
+        
+        return {'patches': patches, 
+                'pos': pos, 
+                'kpm': kpm,
+                'hrtf1':hrtf1,
+                'hrtf2':hrtf2,
+                'az1':az1,
+                'elev1':elev1,
+                'az2':az2,
+                'elev2':elev2,
+                'itd':itd,
+                'name':name}
 
-        return {"patches": patches, "pos": pos, "kpm": kpm,'hrtf1':hrtf1,'hrtf2':hrtf2,'az1':az1,'elev1':elev1,'az2':az2,'elev2':elev2}
+
+class HRTFHeadCondDataset(Dataset):
+    def __init__(self, hp, train=True,debug=False,device=None):
+        df = hp.dataset.train_csv_path if train else hp.dataset.test_csv_path
+        self.df = pd.read_csv(df)
+        if debug:
+            self.df = self.df[:DEBUG_SAMPLES]
+        self.hp = hp
+        self.device=device
+    def __len__(self):
+        return len(self.df)  # <- fix: was len(self.paths)
+
+    def __getitem__(self, idx):
+        line = self.df.iloc[idx]
+        if self.hp.stft.fft_length == 512:
+            p =line['sofa_path']
+            p = p.replace('sofas','pts_512').replace('.sofa','.pt')
+            d,name = load_db(p)
+        else:
+            d,name = load_db(line['pt_path'])
+        p_emb = line['sofa_path'].replace('sofas','ae_res').replace('.sofa','.pt')
+        try:
+            head_emb = torch.load(p_emb).squeeze()
+        except:
+            print(p_emb)
+        patches = d['patches']    # expect [N, C, T]
+        pos     = d['pos']        # [N, 2]
+        N, C, T = patches.shape 
+        kpm = torch.zeros(N, dtype=torch.bool)
+
+        #get hrtfs from az/elev
+        az1 = line['az_1']
+        az2 = line['az_2']
+
+        elev1 = line['elev_1']
+        elev2 = line['elev_2']
+
+        target1 = torch.tensor([az1, elev1], dtype=pos.dtype, device=pos.device)
+        dist1 = torch.norm(pos - target1, dim=1)  # Euclidean distance
+        idx1 = torch.argmin(dist1).item()
+        target2 = torch.tensor([az2, elev2], dtype=pos.dtype, device=pos.device)
+        dist2 = torch.norm(pos - target2, dim=1)  # Euclidean distance
+        idx2 = torch.argmin(dist2).item()
+        
+        hrtf1 = patches[idx1]
+        hrtf2 = patches[idx2]
+        
+        return {'head_emb': head_emb.to(torch.float32), 
+                'hrtf1':hrtf1.to(torch.float32),
+                'hrtf2':hrtf2.to(torch.float32),
+                'az1':torch.tensor(az1),
+                'elev1':torch.tensor(elev1),
+                'az2':torch.tensor(az2),
+                'elev2':torch.tensor(elev2)}
 
 def load_db(path):
     data = torch.load(path)
-    return {'patches': data['patches'], 'pos': data['pos']}
+    p = Path(path)
+    name=f'db_{p.parent.stem}_sample_{p.stem}'
+    return {'patches': data['patches'], 'pos': data['pos']},name
 
-def collate_simple(batch):
+def collate_unif_sample(batch,Nmax=None):
     """
     batch[i] = {
       "patches": [N_i, C, T],
@@ -107,6 +194,7 @@ def collate_simple(batch):
       "hrtf1":   [2*C, T] (real-concat),
       "hrtf2":   [2*C, T] (real-concat),
     }
+    Nmax = None, effective batch size
     Returns:
       patches: [B, Nmax, C, T]
       pos:     [B, Nmax, 2]
@@ -121,29 +209,32 @@ def collate_simple(batch):
     C = next(iter(Cs)); T = next(iter(Ts))
 
     Ns   = [b["patches"].shape[0] for b in batch]
-    Nmax = max(Ns)
+    Nmax = max(Ns) if Nmax == None else Nmax
+
     B    = len(batch)
 
     dtype_x  = batch[0]["patches"].dtype
     dtype_xy = batch[0]["pos"].dtype
+    dtype_itd = batch[0]["itd"].dtype
     device   = batch[0]["patches"].device  # usually CPU inside DataLoader
 
     # --- allocate padded buffers ---
     patches = torch.zeros(B, Nmax, C, T, dtype=dtype_x, device=device)
     pos     = torch.zeros(B, Nmax, 2,    dtype=dtype_xy, device=device)
     kpm     = torch.ones( B, Nmax,       dtype=torch.bool, device=device)  # True=padded
-
+    itd     = torch.ones( B, Nmax,       dtype=dtype_itd, device=device)  
     # per-sample (complex)
     hrtf1 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
     hrtf2 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
 
     # --- copy and restore ---
     for i, b in enumerate(batch):
-        N = b["patches"].shape[0]
-        patches[i, :N] = b["patches"]
-        pos[i, :N]     = b["pos"]
+        N = min(b["patches"].shape[0],Nmax)
+        idx = torch.randperm(b["patches"].shape[0])[:N]
+        patches[i, :N] = b["patches"][idx]
+        pos[i, :N]     = b["pos"][idx]
         kpm[i, :N]     = False
-
+        itd[i,:N] = b['itd'][idx]
         # restore complex HRTFs
         H1 = b["hrtf1"]; H2 = b["hrtf2"]
         C2 = H1.shape[0] // 2
@@ -165,7 +256,84 @@ def collate_simple(batch):
         'az1':b['az1'],
         'az2':b['az2'],
         'elev1':b['elev1'],
-        'elev2':b['elev2']
+        'elev2':b['elev2'],
+        'itd':itd
+        
+    }
+def collate_simple(batch):
+    """
+    batch[i] = {
+      "patches": [N_i, C, T],
+      "pos":     [N_i, 2],
+      "kpm":     [N_i] (bool),
+      "hrtf1":   [2*C, T] (real-concat),
+      "hrtf2":   [2*C, T] (real-concat),
+    }
+    Nmax = None, effective batch size
+    Returns:
+      patches: [B, Nmax, C, T]
+      pos:     [B, Nmax, 2]
+      kpm:     [B, Nmax] (True = padded)
+      hrtf1:   [B, C, T] (complex64)
+      hrtf2:   [B, C, T] (complex64)
+    """
+    # --- sanity / common shapes ---
+    Cs = {b["patches"].shape[1] for b in batch}
+    Ts = {b["patches"].shape[2] for b in batch}
+    assert len(Cs) == 1 and len(Ts) == 1, f"Mixed C/T not supported"
+    C = next(iter(Cs)); T = next(iter(Ts))
+
+    Ns   = [b["patches"].shape[0] for b in batch]
+    Nmax = max(Ns)
+
+    B    = len(batch)
+
+    dtype_x  = batch[0]["patches"].dtype
+    dtype_xy = batch[0]["pos"].dtype
+    dtype_itd = batch[0]["itd"].dtype
+    device   = batch[0]["patches"].device  # usually CPU inside DataLoader
+
+    # --- allocate padded buffers ---
+    patches = torch.zeros(B, Nmax, C, T, dtype=dtype_x, device=device)
+    pos     = torch.zeros(B, Nmax, 2,    dtype=dtype_xy, device=device)
+    kpm     = torch.ones( B, Nmax,       dtype=torch.bool, device=device)  # True=padded
+    itd     = torch.ones( B, Nmax,       dtype=dtype_itd, device=device)
+    name = ['' for _ in range(B)]
+    # per-sample (complex)
+    hrtf1 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
+    hrtf2 = torch.empty(B, C//2, T, dtype=DTYPE, device=device)
+
+    # --- copy and restore ---
+    for i, b in enumerate(batch):
+        N = min(b["patches"].shape[0],Nmax)
+        patches[i, :N] = b["patches"]
+        pos[i, :N]     = b["pos"]
+        kpm[i, :N]     = False
+        itd[i,:N] = b['itd']
+        # restore complex HRTFs
+        H1 = b["hrtf1"]; H2 = b["hrtf2"]
+        C2 = H1.shape[0] // 2
+        Hr1, Hi1 = H1[:C2], H1[C2:]
+        Hr2, Hi2 = H2[:C2], H2[C2:]
+        hrtf1[i] = torch.complex(Hr1, Hi1)
+        hrtf2[i] = torch.complex(Hr2, Hi2)
+        name[i] = b['name']
+    half = C//2
+    patches_real = patches[:,:,:half,:]
+    patches_imag = patches[:,:,half:,:]
+    patches = torch.complex(patches_real,patches_imag).to(DTYPE).permute(0,2,1,3)
+    return {
+        "patches": patches,   # [B, 2,Nmax, T]
+        "pos":     pos,       # [B, Nmax, 2]
+        "kpm":     kpm,       # [B, Nmax] True=padded
+        "hrtf1":   hrtf1,     # [B, C, T] complex64
+        "hrtf2":   hrtf2,     # [B, C, T] complex64
+        'az1':b['az1'],
+        'az2':b['az2'],
+        'elev1':b['elev1'],
+        'elev2':b['elev2'],
+        'itd':itd,
+        'name':name
     }
 
 class ExtractionDatasetRevVAE(Dataset):
@@ -174,7 +342,7 @@ class ExtractionDatasetRevVAE(Dataset):
         self.hp = hp
         self.df = pd.read_csv(self.hp.dataset.train_csv_path) if train else pd.read_csv(self.hp.dataset.test_csv_path) 
         if debug:
-            self.df = self.df[:30]
+            self.df = self.df[:DEBUG_SAMPLES]
         self.fs = self.hp.stft.fs
         self.azs = {}
         tmp_az = 90
@@ -305,6 +473,125 @@ class ExtractionDatasetRevVAE(Dataset):
         return Mix,Y1,Y2
     
 
+import torch
+
+def find_matching_positions(d):
+    # First, normalize shapes: remove batch dimension [1, N, 2] -> [N, 2]
+    d2 = {k: v.squeeze(0) for k, v in d.items()}  
+    
+    # Convert each pos tensor to a set of tuples for fast equality checks
+    tuple_map = {
+        k: {tuple(pair.tolist()) for pair in v}
+        for k, v in d2.items()
+    }
+
+    # Build result  
+    d_res = {}
+
+    for name_i, pos_i in d2.items():
+        matches = {}
+
+        for name_j, pos_j in d2.items():
+            if name_i == name_j:
+                continue
+
+            # find exact matches
+            pairs_j = pos_j.tolist()  # list of [az,el]
+            idx_list = [
+                idx for idx, pair in enumerate(pairs_j)
+                if tuple(pair) in tuple_map[name_i]
+            ]
+
+            if idx_list:  # only save if there are matches
+                mask = (abs(d[name_j][:,idx_list,-1])<30).tolist()[0]
+                idx_filtered = [x for x, m in zip(idx_list, mask) if m]
+                matches[name_j] = idx_filtered 
+
+        d_res[name_i] = matches
+
+    for name in list(d_res.keys()):
+        for sub in list(d_res[name].keys()):
+            if len(d_res[name][sub]) == 0:      # empty list
+                d_res[name].pop(sub)            # remove it
+
+        # Optionally remove empty sub-dicts
+        if len(d_res[name]) == 0:
+            d_res.pop(name)
+
+    return d_res
+def create_similar():
+    new_df = []
+    for i in tqdm(df.index):
+        line = df.iloc[i].copy()
+        p = Path(line['pt_path'])
+        name=f'db_{p.parent.stem}_sample_{p.stem}'
+        get_new_name = True
+        m = 0
+        while get_new_name==True and m<10:
+            try:
+                new_name = random.choice(list(d_res[name].keys()))
+            except:
+                m+=1
+                continue
+
+            if d_res[name][new_name] == []:
+                d_res[name].pop(new_name)
+                m+=1
+                continue
+            new_idx1 = random.choice(d_res[name][new_name])
+            new_pos1 = d[new_name][:,new_idx1]
+            new_idx2 =None
+            s = random.sample(d_res[name][new_name],len(d_res[name][new_name]))
+            for j in s:
+                if abs(d[new_name][:,j] - new_pos1)[:,0] >= 30:
+                    new_idx2 = j
+                    break
+            if new_idx2:
+                new_pos2 = d[new_name][:,new_idx2]
+                # d_res[name][new_name].remove(new_idx1)
+                # d_res[name][new_name].remove(new_idx2)
+                line['az_1'] = float(new_pos1[0][0])
+                line['elev_1'] = float(new_pos1[0][1])
+                line['az_2'] = float(new_pos2[0][0])
+                line['elev_2'] = float(new_pos2[0][1])
+                db = new_name.split('_sample_')[0].replace('db_','')
+                sample = new_name.split('_sample_')[-1]
+                pt_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/pts_512/test_set/{db}/{sample}.pt'
+                sofa_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/test_set/{db}/{sample}.sofa'
+                line.sofa_path = sofa_path
+                line.pt_path = pt_path
+                new_df.append(line)
+                get_new_name = False
+                if d_res[name] == {} or len(d_res[name].keys())<2:
+                    d_res.pop(name)
+            else:
+                m+=1
+    new_df = pd.DataFrame(new_df) 
+    new_df.to_csv('/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_different_heads_wsj0_1k_mp.csv')
+    torch.save(d_res, "positions_match.pt")
+    
+
+def find_names_with_pairs(d, az1, elev1, az2, elev2):
+    target1 = (float(az1), float(elev1))
+    target2 = (float(az2), float(elev2))
+
+    matched_names = []
+
+    for name, pos in d.items():
+        p = pos.squeeze(0).tolist()   # convert [1,N,2] → list of (az,el)
+
+        has_az1 = abs(pos[:, :, 0] -az1)<1 
+        has_elev1 = abs(pos[:, :, 1] -elev1)<1
+        has_az2 = abs(pos[:, :, 0] -az2)<1 
+        has_elev2 = abs(pos[:, :, 1] -elev2)<1
+
+        has1= has_az1*has_elev1
+        has2= has_az2*has_elev2
+
+        if has1.sum() and has2.sum():
+            matched_names.append(name)
+
+    return matched_names
 
 if __name__ == "__main__":
     # from tqdm import tqdm

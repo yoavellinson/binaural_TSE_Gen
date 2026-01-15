@@ -1,31 +1,10 @@
-from typing import Any, Dict, Tuple
-
+from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torchmetrics.functional.audio import permutation_invariant_training as pit
-from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio as si_sdr
+from .NBC2 import NBC2HRTF,NBC2HRTFCond,NBC2HRTF_temb,mNBC2HRTF2
+import math
 
-from .NBC2 import NBC2HRTF
-
-
-def neg_si_sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    batch_size = target.shape[0]
-    si_snr_val = si_sdr(preds=preds, target=target)
-    return -torch.mean(si_snr_val.view(batch_size, -1), dim=1)
-
-def pit_sisdr_stft(pred,target,hp):
-    B,C,F,T = target.shape
-    device = pred.device
-    target=target.to(device)
-    window = torch.hann_window(hp.stft.fft_length,device=device)
-    pred = torch.istft(pred.reshape(B * C,F,T), n_fft=hp.stft.fft_length, hop_length=hp.stft.fft_hop, window=window, win_length=hp.stft.fft_length )
-    pred=pred.reshape(B, C, -1)
-    target = torch.istft(target.reshape(B * C,F,T), n_fft=hp.stft.fft_length, hop_length=hp.stft.fft_hop, window=window, win_length=hp.stft.fft_length )
-    target=target.reshape(B, C, -1)
-    neg_sisdr_val = neg_si_sdr(pred,target)
-    loss = neg_sisdr_val.mean()
-    return loss
 
 class NBSS(nn.Module):
     """Multi-channel Narrow-band Deep Speech Separation with Full-band Permutation Invariant Training.
@@ -105,36 +84,9 @@ if __name__ == '__main__':
     x = torch.randn(size=(3,2,257,626),dtype=torch.complex64)
     ys = torch.randn(size=(3,2,257,626),dtype=torch.complex64)
     hrtf = torch.randn(size=(3,2,257),dtype=torch.complex64)
-    # NBSS_with_NB_BLSTM = NBSS(n_channel=8, n_speaker=2, arch="NB_BLSTM")
-    # ys_hat = NBSS_with_NB_BLSTM(x)
-    # neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
-    # print(ys_hat.shape, neg_sisdr_loss.mean())
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf.yml')
+    NBSS_with_NBC_small = NBSS(hp)
 
-    # NBSS_with_NBC = NBSS(n_channel=8, n_speaker=2, arch="NBC")
-    # ys_hat = NBSS_with_NBC(x)
-    # neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
-    # print(ys_hat.shape, neg_sisdr_loss.mean())
-
-    NBSS_with_NBC_small = NBSS(n_channel=2,
-                               n_speaker=2,
-                               arch="NBC2",
-                               arch_kwargs={
-                                   "n_layers": 8, # 12 for large
-                                   "dim_hidden": 96, # 192 for large
-                                   "dim_ffn": 192, # 384 for large
-                                   "block_kwargs": {
-                                       'n_heads': 2,
-                                       'dropout': 0,
-                                       'conv_kernel_size': 3,
-                                       'n_conv_groups': 8,
-                                       'norms': ("LN", "GBN", "GBN"),
-                                       'group_batch_norm_kwargs': {
-                                           'group_size': 257, # 129 for 8k Hz
-                                           'share_along_sequence_dim': False,
-                                       },
-                                   }
-                               },)
-    
     Ys_hat = NBSS_with_NBC_small(x,hrtf)
     n_fft = 512
     n_overlap=128
@@ -145,5 +97,5 @@ if __name__ == '__main__':
     ys = torch.istft(x.reshape(B * C,F,T), n_fft=n_fft, hop_length=n_overlap, window=window, win_length=n_fft)
     ys=ys.reshape(B, C, -1)
 
-    neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
-    print(ys_hat.shape, neg_sisdr_loss.mean())
+    # neg_sisdr_loss, best_perm = pit(preds=ys_hat, target=ys, metric_func=neg_si_sdr, eval_func='min')
+    # print(ys_hat.shape, neg_sisdr_loss.mean())

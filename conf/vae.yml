@@ -1,5 +1,5 @@
 project: 'binaural_vae'
-checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/vae'
 
 
 model:
@@ -10,13 +10,13 @@ model:
   act_fun: relu
 stft:
   fs: 16000
-  fft_length: 1024
-  fft_hop: 256
+  fft_length: 512
+  fft_hop: 128
   window: hann
 dataset:
   sofas_ppath: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts'
-  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10_mp.csv'
-  test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/pts/test.csv'
+  train_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_train_VAE_wsj0_10k_mp.csv'
+  test_csv_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_VAE_wsj0_1k_mp.csv'
   norm_sample: True
   time_len: 5
 training:
@@ -25,7 +25,7 @@ training:
   batch_size: 2
   num_workers: 4
   weight_decay: 0.05
-  mask_ratio: 0.65
+  mask_ratio: 0.1
   temp: 0.1
   pos_jitter: 0.01
   warmup_steps: 10000

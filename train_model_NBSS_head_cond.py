@@ -3,9 +3,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import wandb
 from omegaconf import OmegaConf
-from data import JoinedDataset,ExtractionDatasetRevVAE,PatchDBDataset,collate_joined
+from data import JoinedDataset,ExtractionDatasetRevVAE,HRTFHeadCondDataset,collate_joined_default
 from torch.utils.data import random_split, DataLoader
-from NBSS.NBSS import NBSS
+from NBSS.NBSS import NBSSCond
 from losses import SiSDRLossFromSTFT,SpecMAE
 from pathlib import Path
 from tqdm import tqdm
@@ -46,7 +46,7 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
         })
     else:
         wandb.init(mode='offline')
-    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     # Send model to device
     device = torch.device(device)
     model = model.to(device)
@@ -70,12 +70,14 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
             Mix = batch['mix_mix']
             Y1,Y2 = batch['mix_y1'],batch['mix_y2']
             hrtf1,hrtf2 = batch['db_hrtf1'],batch['db_hrtf2']
-            Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
+            head_cond = batch['db_head_emb']
+            Mix,Y1,Y2,hrtf1,hrtf2,head_cond = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device),head_cond.to(device)
+
             hrtfs = (hrtf1,hrtf2)
             Ys = (Y1,Y2)
             i = torch.randint(0,2,(1,))
             # Forward pass SPEAKERi
-            outputs1 = model(Mix,hrtfs[i])
+            outputs1 = model(Mix,hrtfs[i],head_cond)
             loss = criterion_sisdr(outputs1, Ys[i])#,hp)
             sisdr_loss = loss.item()
             loss = loss.to(device)
@@ -107,11 +109,12 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
                 Mix = val_batch['mix_mix']
                 Y1,Y2 = val_batch['mix_y1'],val_batch['mix_y2']
                 hrtf1,hrtf2 = val_batch['db_hrtf1'],val_batch['db_hrtf2']
-                Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
+                head_cond = val_batch['db_head_emb']
+                Mix,Y1,Y2,hrtf1,hrtf2,head_cond = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device),head_cond.to(device)
                 # Forward pass SPEAKER1
-                val_outputs1 = model(Mix,hrtf1)
+                val_outputs1 = model(Mix,hrtf1,head_cond)
                 val_loss_i = criterion_sisdr(val_outputs1, Y1)*hp.loss.sisdr_coeff
-                val_outputs2 = model(Mix,hrtf2)
+                val_outputs2 = model(Mix,hrtf2,head_cond)
                 val_loss_i += criterion_sisdr(val_outputs2, Y2)*hp.loss.sisdr_coeff
                 val_loss += val_loss_i.item() * Mix.size(0)
 
@@ -198,10 +201,10 @@ if __name__=="__main__":
     torch.cuda.set_device(device_idx)  
     hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
 
-    ds_db  = PatchDBDataset(hp, train=True,debug=True if DEBUG else False)
+    ds_db  = HRTFHeadCondDataset(hp, train=True,debug=True if DEBUG else False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=True if DEBUG else False)
 
-    joined_ds = JoinedDataset(ds_db, ds_mix)
+    joined_ds = JoinedDataset(ds_db, ds_mix,device=device)
     train_size = int(0.8 * len(joined_ds))  # 80% for training
     test_size = len(joined_ds) - train_size  # Remaining 20% for testing
     train_dataset, test_dataset = random_split(joined_ds, [train_size, test_size])
@@ -209,40 +212,20 @@ if __name__=="__main__":
     train_loader = DataLoader(
         train_dataset,
         batch_size=hp.training.batch_size,
-        num_workers=hp.training.num_workers,
-        collate_fn=collate_joined,
-        shuffle=True
+        num_workers=0,
+        shuffle=True,
+        collate_fn=collate_joined_default
     )    
     val_loader = DataLoader(
         test_dataset,
         batch_size=hp.training.batch_size,
-        num_workers=hp.training.num_workers,
-        collate_fn=collate_joined,
-        shuffle=False
+        num_workers=0,
+        shuffle=False,
+        collate_fn=collate_joined_default
     )    
 
 
-    # model = NBSS(n_channel=2,
-    #              n_speaker=2,
-    #              arch="NBC2",
-    #              arch_kwargs={
-    #                 "n_layers": 8, # 12 for large
-    #                 "dim_hidden": 96, # 192 for large
-    #                 "dim_ffn": 192, # 384 for large
-    #                 "block_kwargs": {
-    #                     'n_heads': 2,
-    #                     'dropout': 0,
-    #                     'conv_kernel_size': 3,
-    #                     'n_conv_groups': 8,
-    #                     'norms': ("LN", "GBN", "GBN"),
-    #                     'group_batch_norm_kwargs': {
-    #                         'group_size': 257,
-    #                         'share_along_sequence_dim': False,
-    #                     },
-    #                 }
-    #             },)
-    model = NBSS(hp)
-
+    model = NBSSCond(hp)
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
     runs = sorted(Path(hp.checkpoint_path).glob("**/*.pth"), key=os.path.getmtime)

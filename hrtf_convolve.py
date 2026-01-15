@@ -58,7 +58,7 @@ class SOFA_HRTF_db:
             h = torch.tensor(h)
             self.hs.append(h)
             self.azelevs.append(torch.tensor([p[0],p[1]]))
-        
+            
         # stack + fft
         h = torch.stack(self.hs)
         max_per_sample = h.abs().amax(dim=(1, 2), keepdim=True)  # shape [865, 1, 1]

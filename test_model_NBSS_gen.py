@@ -6,7 +6,7 @@ import torchaudio.functional as F
 import numpy as np
 from losses import PESQloss,SiSDRLossFromSTFT
 from data import ExtractionDatasetRevVAE,PatchDBDataset,JoinedDataset,collate_joined
-from NBSS.NBSS import NBSS
+from NBSS.NBSS import NBSS_CFM
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -19,26 +19,6 @@ def roll_tnzr(x:torch.Tensor):
     x = x.roll(-1)
     x[:,:,-1] = 0
     return x
-
-def write_wav_safe(path, x_time: torch.Tensor, fs: int, device=None):
-    # If x_time came from GPU computations, force completion (debugger effectively does this)
-    if device is not None and device.type == "cuda":
-        torch.cuda.synchronize(device)
-
-    # Make it an owned contiguous numpy buffer
-    x = (x_time.detach()
-                 .to("cpu", non_blocking=False)
-                 .to(torch.float32)
-                 .contiguous()
-                 .numpy()
-                 .copy())  # <- critical: breaks aliasing/views for good
-
-    # soundfile expects shape [T] or [T, C]
-    if x.ndim == 2 and x.shape[0] < x.shape[1]:
-        # your tensors are usually [C, T] -> convert to [T, C]
-        x = x.T
-
-    sf.write(path, x, fs, subtype="FLOAT")
 
 def get_best_sisdr(crit,y_hat,y,max_shift=0.1):
     sisdr_res = []
@@ -55,6 +35,34 @@ def get_best_sisdr(crit,y_hat,y,max_shift=0.1):
     return best_sisdr
 
 
+def sample_flow(model, Mix, H, N_steps=64, device='cuda'):
+    """
+    Generates the extracted speech (x_1) using the Euler method.
+
+    Args:
+        model (nn.Module): The trained Flow Matching model (u_theta).
+        Mix (torch.Tensor): The 2-channel mixture signal (y).
+        H (torch.Tensor): The spatial clue/HRTF (s).
+        N_steps (int): Number of integration steps (NFEs).
+        device (str): Device to perform computations on ('cuda' or 'cpu').
+
+    Returns:
+        torch.Tensor: The generated 2-channel extracted speech signal (x_1).
+    """
+    
+    model.eval()
+    
+    B = Mix.shape[0]
+    dt = 1.0 / N_steps 
+    x_t = torch.randn_like(Mix, device=device) 
+    with torch.no_grad():
+        for i in tqdm(range(N_steps)):
+            t_i = i * dt 
+            t_batch = torch.full((B,), t_i, device=device) 
+            v_pred = model(Mix, H, x_t, t_batch)
+            x_t = x_t + v_pred * dt
+    return x_t
+
 def load_checkpoint(model, path, device='cpu'):
     checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -63,13 +71,13 @@ def load_checkpoint(model, path, device='cpu'):
 # check the HRTF downsampling
 if __name__ == "__main__":
     one_speaker=False
-    device_idx = 3
+    device_idx = 0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/dsi/gannot-lab/gannot-lab1/users/yoavellinson/outputs_nbss_hrtf')
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
-    ds_db  = PatchDBDataset(hp, train=False,debug=False)
-    ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=False)
+    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_gen')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_large_gen.yml')
+    ds_db  = PatchDBDataset(hp, train=True,debug=True)
+    ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=True)
     joined_ds = JoinedDataset(ds_db, ds_mix)
 
     # db.sir=0
@@ -86,22 +94,23 @@ if __name__ == "__main__":
     dnsmos_sig = []
     dnsmos_bak = []
     sisdri=[]
+    checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large_gen/eternal-forest-9_NBSS_CFM_lr_0.0003_bs_1_loss_sisdr_L1_rev/model_epoch_best.pth"
 
     with torch.no_grad():
-        model = NBSS(hp)
-        model = model.to(device)
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/tough-night-33_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
-        load_checkpoint(model,path=checkpoint_path,device=device)
+        model = NBSS_CFM(hp).to(device)
+        load_checkpoint(model, path=checkpoint_path, device=device)
         model.eval()
-        i=0
-        #dns compute score
-        for step,batch in tqdm(enumerate(test_loader),total=len(test_loader)):
-            Mix = batch['mix_mix']
-            Y1,Y2 = batch['mix_y1'],batch['mix_y2']
-            hrtf1,hrtf2 = batch['db_hrtf1'],batch['db_hrtf2']
-            hrtf_patches = batch['db_patches']
-            Mix,Y1,Y2,hrtf1,hrtf2 = Mix.to(device),Y1.to(device),Y2.to(device),hrtf1.to(device),hrtf2.to(device)
-            outputs1 = model(Mix,hrtf1)
+
+        for step, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
+            Mix = batch['mix_mix'].to(device)
+            Y1  = batch['mix_y1'].to(device)
+            Y2  = batch['mix_y2'].to(device)
+            h1  = batch['db_hrtf1'].to(device)
+            h2  = batch['db_hrtf2'].to(device)
+
+            # ---- SAMPLE speaker 1 ----
+            outputs1 = sample_flow(model, Mix, h1)
+
             az1,elev1,az2,elev2 =batch['db_az1'],batch['db_elev1'],batch['db_az2'],batch['db_elev2']
 
             #sisdr
@@ -113,23 +122,21 @@ if __name__ == "__main__":
             sisdri.append((-sisdr_1+sisdr_in_1).cpu())
 
             # pesq
-            pesq_out_1 = criterion_pesq.mos(outputs1,Y1).mean()
+            pesq_out_1 = criterion_pesq.mos(outputs1,Y1).max()
             pesq_out.append(pesq_out_1)
-            pesq_in_1 = criterion_pesq.mos(Mix,Y1).mean()
+            pesq_in_1 = criterion_pesq.mos(Mix,Y1).max()
             pesq_in.append(pesq_in_1)
 
             mix = ds_mix.iSTFT(Mix).detach().cpu()
             sf.write(out_dir/f'mix_{step}.wav',mix.T,ds_mix.fs)
-
             y1 = ds_mix.iSTFT(Y1).detach().cpu()
             sf.write(out_dir/f'y1_{step}_az_{int(az1)}_elev_{int(elev1)}.wav',y1.T,ds_mix.fs)
 
             y_hat_1 = ds_mix.iSTFT(outputs1).detach().cpu()
             sf.write(out_dir/f'y_hat_1_{step}_az_{int(az1)}_elev_{int(elev1)}_sisdr_{sisdr_1:.3f}.wav',y_hat_1.T,ds_mix.fs)
 
-
             if not one_speaker:
-                outputs2 = model(Mix,hrtf2)
+                outputs2 = sample_flow(model, Mix, h2)
                 sisdr_2 = criterion_sisdr(outputs2,Y2)
                 sisdr_out.append(-sisdr_2.cpu())
                 sisdr_in_2 = criterion_sisdr(Mix,Y2)
@@ -143,6 +150,7 @@ if __name__ == "__main__":
                 sf.write(out_dir/f'y2_{step}_az_{int(az2)}_elev_{int(elev2)}.wav',y2.T,ds_mix.fs)
                 y_hat_2 = ds_mix.iSTFT(outputs2).detach().cpu()
                 sf.write(out_dir/f'y_hat_2_{step}_az_{int(az2)}_elev_{int(elev2)}_sisdr_{sisdr_2:.3f}.wav',y_hat_2.T,ds_mix.fs)
+            break
         # Ensure 1D arrays
         sisdr_in = reject_outliers(np.ravel(sisdr_in))
         sisdr_out = reject_outliers(np.ravel(sisdr_out))
@@ -159,10 +167,9 @@ if __name__ == "__main__":
         # Calculate means
         mean_sisdr_out = np.mean(sisdr_out)
         mean_sisdr_in = np.mean(sisdr_in)
-        print(mean_sisdr_out,mean_sisdr_in)
         mean_pesq_out = np.mean(pesq_out)
         mean_pesq_in = np.mean(pesq_in)
-        # mean_dnsmos = {'OVRL':np.mean(0),'SIG':np.mean(0),'BAK':np.mean(0)}
+        mean_dnsmos = {'OVRL':np.mean(0),'SIG':np.mean(0),'BAK':np.mean(0)}
 
         # Create two side-by-side histograms
         fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
