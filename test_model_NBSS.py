@@ -20,6 +20,26 @@ def roll_tnzr(x:torch.Tensor):
     x[:,:,-1] = 0
     return x
 
+def write_wav_safe(path, x_time: torch.Tensor, fs: int, device=None):
+    # If x_time came from GPU computations, force completion (debugger effectively does this)
+    if device is not None and device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+    # Make it an owned contiguous numpy buffer
+    x = (x_time.detach()
+                 .to("cpu", non_blocking=False)
+                 .to(torch.float32)
+                 .contiguous()
+                 .numpy()
+                 .copy())  # <- critical: breaks aliasing/views for good
+
+    # soundfile expects shape [T] or [T, C]
+    if x.ndim == 2 and x.shape[0] < x.shape[1]:
+        # your tensors are usually [C, T] -> convert to [T, C]
+        x = x.T
+
+    sf.write(path, x, fs, subtype="FLOAT")
+
 def get_best_sisdr(crit,y_hat,y,max_shift=0.1):
     sisdr_res = []
     y_hat = y_hat[:,None,:]
@@ -43,10 +63,10 @@ def load_checkpoint(model, path, device='cpu'):
 # check the HRTF downsampling
 if __name__ == "__main__":
     one_speaker=False
-    device_idx = 0
+    device_idx = 3
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    out_dir = Path('/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/mixs_ys_rev_NBSS_different_heads')
+    out_dir = Path('/dsi/gannot-lab/gannot-lab1/users/yoavellinson/outputs_nbss_hrtf')
     hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
     ds_db  = PatchDBDataset(hp, train=False,debug=False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=False,debug=False)
@@ -70,7 +90,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         model = NBSS(hp)
         model = model.to(device)
-        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/sparkling-armadillo-15_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
+        checkpoint_path = "/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large/tough-night-33_NBSS_lr_0.001_bs_5_loss_sisdr_L1_rev/model_epoch_best.pth"
         load_checkpoint(model,path=checkpoint_path,device=device)
         model.eval()
         i=0
@@ -93,18 +113,20 @@ if __name__ == "__main__":
             sisdri.append((-sisdr_1+sisdr_in_1).cpu())
 
             # pesq
-            pesq_out_1 = criterion_pesq.mos(outputs1,Y1).max()
+            pesq_out_1 = criterion_pesq.mos(outputs1,Y1).mean()
             pesq_out.append(pesq_out_1)
-            pesq_in_1 = criterion_pesq.mos(Mix,Y1).max()
+            pesq_in_1 = criterion_pesq.mos(Mix,Y1).mean()
             pesq_in.append(pesq_in_1)
 
             mix = ds_mix.iSTFT(Mix).detach().cpu()
             sf.write(out_dir/f'mix_{step}.wav',mix.T,ds_mix.fs)
+
             y1 = ds_mix.iSTFT(Y1).detach().cpu()
             sf.write(out_dir/f'y1_{step}_az_{int(az1)}_elev_{int(elev1)}.wav',y1.T,ds_mix.fs)
 
             y_hat_1 = ds_mix.iSTFT(outputs1).detach().cpu()
             sf.write(out_dir/f'y_hat_1_{step}_az_{int(az1)}_elev_{int(elev1)}_sisdr_{sisdr_1:.3f}.wav',y_hat_1.T,ds_mix.fs)
+
 
             if not one_speaker:
                 outputs2 = model(Mix,hrtf2)
@@ -137,9 +159,10 @@ if __name__ == "__main__":
         # Calculate means
         mean_sisdr_out = np.mean(sisdr_out)
         mean_sisdr_in = np.mean(sisdr_in)
+        print(mean_sisdr_out,mean_sisdr_in)
         mean_pesq_out = np.mean(pesq_out)
         mean_pesq_in = np.mean(pesq_in)
-        mean_dnsmos = {'OVRL':np.mean(0),'SIG':np.mean(0),'BAK':np.mean(0)}
+        # mean_dnsmos = {'OVRL':np.mean(0),'SIG':np.mean(0),'BAK':np.mean(0)}
 
         # Create two side-by-side histograms
         fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)

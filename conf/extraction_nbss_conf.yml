@@ -1,4 +1,6 @@
 project: 'binaural_NBSS'
+checkpoint_path: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS_large'
+
 
 model:
   inputchannels: 1
@@ -48,4 +50,3 @@ training:
   num_workers: 4
   weight_decay: 0.05
   seed: 42
-  checkpoint_dir: '/home/workspace/yoavellinson/binaural_TSE_Gen/checkpoints/binaural_NBSS'

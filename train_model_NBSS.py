@@ -222,7 +222,27 @@ if __name__=="__main__":
     )    
 
 
+    # model = NBSS(n_channel=2,
+    #              n_speaker=2,
+    #              arch="NBC2",
+    #              arch_kwargs={
+    #                 "n_layers": 8, # 12 for large
+    #                 "dim_hidden": 96, # 192 for large
+    #                 "dim_ffn": 192, # 384 for large
+    #                 "block_kwargs": {
+    #                     'n_heads': 2,
+    #                     'dropout': 0,
+    #                     'conv_kernel_size': 3,
+    #                     'n_conv_groups': 8,
+    #                     'norms': ("LN", "GBN", "GBN"),
+    #                     'group_batch_norm_kwargs': {
+    #                         'group_size': 257,
+    #                         'share_along_sequence_dim': False,
+    #                     },
+    #                 }
+    #             },)
     model = NBSS(hp)
+
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
     runs = sorted(Path(hp.checkpoint_path).glob("**/*.pth"), key=os.path.getmtime)

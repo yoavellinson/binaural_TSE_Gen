@@ -9,13 +9,7 @@ from scipy import signal
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data._utils.collate import default_collate
-import sys
-sys.path.append("/home/workspace/yoavellinson/binaural_TSE_Gen")
-from audio_itd import hrir2itd_fft
-DTYPE = torch.complex64
-from pathlib import Path
-DEBUG_SAMPLES=100
-
+from conf.conf import DTYPE
 
 class JoinedDataset(Dataset):
     """
@@ -358,6 +352,7 @@ class ExtractionDatasetRevVAE(Dataset):
             if tmp_az ==-5:
                 tmp_az = 355
         self.sir = None
+        self.stft_window=torch.hann_window(self.hp.stft.fft_length)
         
     def __len__(self):
         return len(self.df)
@@ -397,13 +392,35 @@ class ExtractionDatasetRevVAE(Dataset):
         x = x/(x.abs().max(dim=-1, keepdim=True).values)
         return self.stft_sample(x)
     
-    def stft_sample(self,x):
-        X = torch.stft(torch.squeeze(x),n_fft=self.hp.stft.fft_length, hop_length=self.hp.stft.fft_hop, window=torch.hann_window(self.hp.stft.fft_length), return_complex=True).to(DTYPE)
-        X[0:2, :] = X[0:2, :] * 0.001
-        # mx_x = torch.max(torch.max(torch.abs(torch.real(X)) , torch.max(torch.abs(torch.imag(X)) )))
-        # X = X/mx_x
+    # def stft_sample(self,x):
+    #     X = torch.stft(torch.squeeze(x),n_fft=self.hp.stft.fft_length, hop_length=self.hp.stft.fft_hop, window=self.stft_window, return_complex=True).to(DTYPE)
+    #     return X
+    def stft_sample(self, x):
+        # x must be [C, T]
+        assert x.ndim == 2, f"Expected [C,T], got {x.shape}"
+
+        X = torch.stft(
+            x,
+            n_fft=self.hp.stft.fft_length,
+            hop_length=self.hp.stft.fft_hop,
+            window=self.stft_window,
+            return_complex=True
+        ).to(DTYPE)
+
         return X
-    
+    def iSTFT(self, x):
+        x = x.detach().cpu()
+        x = torch.squeeze(x, dim=0) 
+
+        x_time = torch.istft(
+            x,
+            n_fft=self.hp.stft.fft_length,
+            hop_length=self.hp.stft.fft_hop,
+            window=self.stft_window,
+            length=None,
+        )
+        return x_time
+
     def hrtf_preprocces(self,hrtf):
         HRTF = torch.fft.fft(hrtf,self.hp.stft.fft_length).to(DTYPE)
         HRTF = HRTF[:,1:self.hp.stft.fft_length//2 +1]
@@ -422,11 +439,7 @@ class ExtractionDatasetRevVAE(Dataset):
         stereo_audio_h = np.concatenate((rend_L[:,np.newaxis],rend_R[:,np.newaxis]),axis=1)
         return torch.tensor(stereo_audio_h).T,fs
     
-    def iSTFT(self,x):
-        x_time = torch.istft(torch.squeeze(x).detach().cpu(),n_fft=self.hp.stft.fft_length, hop_length=self.hp.stft.fft_hop, window=torch.hann_window(self.hp.stft.fft_length))
-        x_time = x_time/(x_time.abs().max(dim=-1, keepdim=True).values)
-        return x_time
-    
+
     def __getitem__(self, idx):
         line = self.df.iloc[idx]
 
@@ -581,53 +594,36 @@ def find_names_with_pairs(d, az1, elev1, az2, elev2):
     return matched_names
 
 if __name__ == "__main__":
-    from tqdm import tqdm
-    import random
-
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large_large.yml')
-    ds_db  = PatchDBDataset(hp, train=False)
-    ds_mix = ExtractionDatasetRevVAE(hp, train=False)
-
-    joined_ds = JoinedDataset(ds_db, ds_mix)
-    loader = DataLoader(
-        joined_ds,
-        batch_size=1,
-        num_workers=1,
-        collate_fn=collate_joined
-    )
-    d = {}
-    for step,batch in tqdm(enumerate(loader),total=len(loader)):
-        name = batch['db_name']
-        if not name in list(d.keys()):
-            pos = batch['db_pos']
-            d[name[0]] = pos
-        if len(d.keys())==7:
-            break
-    df = ds_db.df
-    new_df = []
-    for i in tqdm(df.index):
-        line = df.iloc[i].copy()
-        p = Path(line['pt_path'])
-        name=f'db_{p.parent.stem}_sample_{p.stem}'
-        az1,elev1 = line['az_1'],line['elev_1']
-        az2,elev2 = line['az_2'],line['elev_2']
-        d_tmp = d.copy()
-        d_tmp.pop(name)
-        names = find_names_with_pairs(d_tmp,az1,elev1,az2,elev2)
-        if names == []:
-            continue
-        else: 
-            new_name = random.sample(names,1)[0]
-
-            # new_name = random.choice(list(d_res[name].keys()))
+    # from tqdm import tqdm
     
-            db = new_name.split('_sample_')[0].replace('db_','')
-            sample = new_name.split('_sample_')[-1]
-            pt_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/pts_512/test_set/{db}/{sample}.pt'
-            sofa_path = f'/home/workspace/yoavellinson/binaural_TSE_Gen/sofas/test_set/{db}/{sample}.sofa'
-            line.sofa_path = sofa_path
-            line.pt_path = pt_path
-            new_df.append(line)
-    new_df = pd.DataFrame(new_df) 
-    new_df.to_csv('/home/workspace/yoavellinson/binaural_TSE_Gen/csvs/HRTF_test_different_heads_wsj0_1k_mp.csv')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
+    # ds_db  = PatchDBDataset(hp, train=True)
+    ds_mix = ExtractionDatasetRevVAE(hp, train=True)
+    wav,sr = sf.read('/dsi/gannot-lab/gannot-lab1/datasets/sharon_db/wsj0/Test/445/445c0407.wav')
+    WAV = ds_mix.stft_sample(torch.tensor(wav))
+    wav_hat = ds_mix.iSTFT(WAV)
+    sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/tests/hat.wav',wav_hat,16000)
+    sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/tests/org.wav',wav,16000)
+    print(((wav-wav_hat.numpy())**2).sum())
+    # joined_ds = JoinedDataset(ds_db, ds_mix)
+    # loader = DataLoader(
+    #     joined_ds,
+    #     batch_size=1,
+    #     num_workers=1,
+    #     collate_fn=collate_joined
+    # )
+    # for step,batch in tqdm(enumerate(loader),total=len(loader)):
+    #     print(batch.keys())   
+        
+    #     Mix = batch['mix_mix']
+    #     S1,S2 = batch['mix_y1'],batch['mix_y2']
+    #     mix = ds_mix.iSTFT(Mix)
+    #     s1,s2 = ds_mix.iSTFT(S1),ds_mix.iSTFT(S2)
 
+    #     sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/mix_{step}.wav',mix.T,16000)
+    #     sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s1_{step}.wav',s1.T,16000)
+    #     sf.write(f'/home/workspace/yoavellinson/binaural_TSE_Gen/outputs/audio/s2_{step}.wav',s2.T,16000)
+    #     break
+    #     #### check the create data script for the rounding of az an elev so it matches in collate fn
+
+    
