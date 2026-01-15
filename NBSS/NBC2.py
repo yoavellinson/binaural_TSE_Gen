@@ -248,7 +248,6 @@ class NBC2Block(nn.Module):
 
 
 class NBC2HRTF(nn.Module):
-
     def __init__(
         self,
         dim_input: int,

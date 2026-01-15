@@ -37,24 +37,34 @@ class NBSS(nn.Module):
 
     def __init__(
             self,
-            n_channel: int = 8,
-            n_speaker: int = 2,
-            n_fft: int = 512,
-            n_overlap: int = 256,
-            ref_channel: int = 0,
-            arch: str = "NB_BLSTM",  # could also be NBC, NBC2
-            arch_kwargs: Dict[str, Any] = dict(),
+            hp      
     ):
         super().__init__()
-        self.arch = NBC2HRTF(dim_input=n_channel * 2, dim_output=n_speaker * 2, **arch_kwargs)     
+        
+        self.hp=hp
+        self.register_buffer('window', torch.hann_window(hp.stft.fft_length), False)  # self.window, will be moved to self.device at training time
+        self.ref_channel = hp.model.ref_channel
+        self.n_channel = hp.model.n_channel
+        self.n_channel_out = hp.model.output_channels
+        arch_kwargs= {  
+                "n_layers": hp.model.n_layers,
+                "dim_hidden": hp.model.dim_hidden,
+                "dim_ffn": hp.model.dim_ffn,
+                "block_kwargs": {
+                    'n_heads': hp.model.block.n_heads,
+                    'dropout': hp.model.block.dropout,
+                    'conv_kernel_size': hp.model.block.conv_kernel_size,
+                    'n_conv_groups': hp.model.block.n_conv_groups,
+                    'norms': tuple(hp.model.block.norms),
+                    'group_batch_norm_kwargs': {
+                        'group_size': hp.model.block.group_batch_norm.group_size,
+                        'share_along_sequence_dim': hp.model.block.group_batch_norm.share_along_sequence_dim,
+                    },
+                }
+            }
+        self.arch = NBC2HRTF(dim_input=self.n_channel * 2, dim_output=self.n_channel_out * 2, **arch_kwargs)     
 
-        self.register_buffer('window', torch.hann_window(n_fft), False)  # self.window, will be moved to self.device at training time
-        self.n_fft = n_fft
-        self.n_overlap = n_overlap
-        self.ref_channel = ref_channel
-        self.n_channel = n_channel
-        self.n_speaker = n_speaker
-
+        
     def forward(self, x: Tensor,hrtf: Tensor) -> Tensor:
         """forward
 
@@ -67,7 +77,8 @@ class NBSS(nn.Module):
 
         # STFT
         B,C,F,T = x.shape
-        X = x.permute(0, 2, 3, 1)  # (batch, freq, time frame, channel)
+        X = x.clone()
+        X = X.permute(0, 2, 3, 1)  # (batch, freq, time frame, channel)
         hrtf = hrtf.permute(0,2,1).unsqueeze(-2)
         # normalization by using ref_channel
         F, TF = X.shape[1], X.shape[2]
@@ -84,7 +95,7 @@ class NBSS(nn.Module):
         output = self.arch(X,hrtf)
 
         # to complex
-        output = output.reshape(B, F, TF, self.n_speaker, 2)
+        output = output.reshape(B, F, TF, self.n_channel_out, 2)
         output = torch.view_as_complex(output)  # [B, F, TF, S]
         y_hat = output.permute(0,3,1,2)
         return y_hat

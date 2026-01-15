@@ -132,7 +132,7 @@ def train_with_wandb(model,optimizer,epoch_start,step_start, hp, train_loader, v
         if epoch == 0 or epoch==epoch_start:
             train_loss_best = train_loss
             val_loss_best = val_loss
-            checkpoint_dir_run = Path(hp.training.checkpoint_dir)/f'{str(wandb.run.name)}_{model.__class__.__name__}_lr_{learning_rate}_bs_{train_loader.batch_size}_loss_sisdr_L1_rev'
+            checkpoint_dir_run = Path(hp.checkpoint_path)/f'{str(wandb.run.name)}_{model.__class__.__name__}_lr_{learning_rate}_bs_{train_loader.batch_size}_loss_sisdr_L1_rev'
             try:
                 checkpoint_dir_run.mkdir(exist_ok=True)
             except:
@@ -187,7 +187,7 @@ if __name__=="__main__":
     device_idx=0
     device = torch.device(f'cuda:{device_idx}') if torch.cuda.is_available() else torch.device('cpu')
     torch.cuda.set_device(device_idx)  
-    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf.yml')
+    hp = OmegaConf.load('/home/workspace/yoavellinson/binaural_TSE_Gen/conf/extraction_nbss_conf_large.yml')
 
     ds_db  = PatchDBDataset(hp, train=True,debug=True if DEBUG else False)
     ds_mix = ExtractionDatasetRevVAE(hp, train=True,debug=True if DEBUG else False)
@@ -213,28 +213,30 @@ if __name__=="__main__":
     )    
 
 
-    model = NBSS(n_channel=2,
-                 n_speaker=2,
-                 arch="NBC2",
-                 arch_kwargs={
-                    "n_layers": 6, # 12 for large
-                    "dim_hidden": 96, # 192 for large
-                    "dim_ffn": 192, # 384 for large
-                    "block_kwargs": {
-                        'n_heads': 2,
-                        'dropout': 0,
-                        'conv_kernel_size': 3,
-                        'n_conv_groups': 8,
-                        'norms': ("LN", "GBN", "GBN"),
-                        'group_batch_norm_kwargs': {
-                            'group_size': 257,
-                            'share_along_sequence_dim': False,
-                        },
-                    }
-                },)
+    # model = NBSS(n_channel=2,
+    #              n_speaker=2,
+    #              arch="NBC2",
+    #              arch_kwargs={
+    #                 "n_layers": 8, # 12 for large
+    #                 "dim_hidden": 96, # 192 for large
+    #                 "dim_ffn": 192, # 384 for large
+    #                 "block_kwargs": {
+    #                     'n_heads': 2,
+    #                     'dropout': 0,
+    #                     'conv_kernel_size': 3,
+    #                     'n_conv_groups': 8,
+    #                     'norms': ("LN", "GBN", "GBN"),
+    #                     'group_batch_norm_kwargs': {
+    #                         'group_size': 257,
+    #                         'share_along_sequence_dim': False,
+    #                     },
+    #                 }
+    #             },)
+    model = NBSS(hp)
+
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=hp.training.lr,weight_decay=hp.training.weight_decay)
-    runs = sorted(Path(hp.training.checkpoint_dir).glob("**/*.pth"), key=os.path.getmtime)
+    runs = sorted(Path(hp.checkpoint_path).glob("**/*.pth"), key=os.path.getmtime)
     resume=False
     if runs:
         latest_checkpoint_pth = runs[-1]
